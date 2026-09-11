@@ -16,11 +16,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'generate_image',
-      description: 'Générer une image à partir d’un prompt texte via Replicate (FLUX)',
+      description: 'Générer une image à partir d’un prompt texte',
       inputSchema: {
         type: 'object',
         properties: {
-          prompt: { type: 'string', description: 'Description détaillée de l’image à générer' }
+          prompt: { type: 'string', description: 'Description de l’image' }
         },
         required: ['prompt']
       }
@@ -40,6 +40,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 export default async function handler(req, res) {
-  const transport = new SSEServerTransport('/api/index', res);
-  await server.connect(transport);
+  if (req.method === 'GET') {
+    const transport = new SSEServerTransport('/api/index', res);
+    await server.connect(transport);
+  } else {
+    res.status(405).json({ error: 'Method not allowed' });
+  }
 }
