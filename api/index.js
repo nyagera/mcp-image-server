@@ -8,18 +8,16 @@ const replicate = new Replicate({
 const MODELS = {
   'flux-schnell': 'black-forest-labs/flux-schnell',
   'flux-dev': 'black-forest-labs/flux-dev',
-  'nano-banana-pro': 'owner/nano-banana-pro' // Remplacez "owner/nano-banana-pro" par l'identifiant exact Replicate
+  'nano-banana-pro': 'owner/nano-banana-pro' // Remplacez "owner/nano-banana-pro" par l'ID Replicate exact
 };
 
 export default async function handler(req, res) {
-  // En-têtes CORS pour autoriser les requêtes
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  // Refus explicite des requêtes GET
   if (req.method === 'GET') {
     res.setHeader('Allow', 'POST, OPTIONS');
     return res.status(405).end();
@@ -36,10 +34,8 @@ export default async function handler(req, res) {
         protocolVersion: body.params?.protocolVersion
       });
 
-      // Gestion des notifications (réponse 202 sans corps)
       if (body.id === undefined) return res.status(202).end();
 
-      // Négociation d'initialisation MCP
       if (method === 'initialize') {
         return res.status(200).json({
           jsonrpc: '2.0',
@@ -47,12 +43,12 @@ export default async function handler(req, res) {
           result: {
             protocolVersion: '2025-06-18',
             capabilities: { tools: {} },
-            serverInfo: { name: 'mcp-image-server', version: '1.3.0' }
+            serverInfo: { name: 'mcp-image-server', version: '1.4.0' }
           }
         });
       }
 
-      // Registre complet des outils pour ChatGPT
+      // Registre étendu : support multi-images et résolution
       if (method === 'tools/list') {
         return res.status(200).json({
           jsonrpc: '2.0',
@@ -61,32 +57,42 @@ export default async function handler(req, res) {
             tools: [
               {
                 name: 'generate_image',
-                description: 'Générer ou modifier une image via Replicate (FLUX ou Nano Banana Pro). Si l’utilisateur n’a pas précisé le modèle, le format (aspect ratio) ou le format de fichier, demande-lui ses préférences avant de lancer la génération.',
+                description: 'Générer ou modifier une image via Replicate. Supporte plusieurs images de référence (avatar, vêtements, style) et la résolution personnalisée.',
                 inputSchema: {
                   type: 'object',
                   properties: {
                     prompt: { 
                       type: 'string', 
-                      description: 'Description détaillée de l’image à générer ou des modifications à apporter' 
+                      description: 'Description détaillée de l’image à générer ou de la référence sheet' 
                     },
                     model: {
                       type: 'string',
                       enum: ['flux-schnell', 'flux-dev', 'nano-banana-pro'],
-                      description: 'Modèle à utiliser (flux-schnell pour la rapidité, flux-dev pour img2img et qualité, nano-banana-pro). Par défaut flux-schnell.'
+                      description: 'Modèle à utiliser (par défaut flux-dev ou nano-banana-pro pour img2img multi-références)'
                     },
                     image: {
                       type: 'string',
-                      description: 'URL d’une image source pour le mode Image-to-Image (optionnel)'
+                      description: 'URL principale de l’image source'
+                    },
+                    images: {
+                      type: 'array',
+                      items: { type: 'string' },
+                      description: 'Liste d’URLs de plusieurs images de référence (ex: [URL_avatar, URL_vetement])'
                     },
                     aspect_ratio: { 
                       type: 'string', 
                       enum: ['1:1', '16:9', '21:9', '3:2', '2:3', '4:5', '9:16'],
-                      description: 'Ratio d’aspect de l’image (par défaut 1:1)' 
+                      description: 'Ratio d’aspect de l’image (ex: 16:9)' 
+                    },
+                    resolution: {
+                      type: 'string',
+                      enum: ['1k', '2k', '4k'],
+                      description: 'Résolution de sortie souhaitée (par défaut 2k)'
                     },
                     output_format: {
                       type: 'string',
                       enum: ['webp', 'png', 'jpg'],
-                      description: 'Format du fichier image de sortie (par défaut webp)'
+                      description: 'Format du fichier (par défaut png ou webp)'
                     },
                     prompt_strength: {
                       type: 'number',
@@ -101,14 +107,20 @@ export default async function handler(req, res) {
         });
       }
 
-      // Exécution de la génération d'image
+      // Exécution
       if (method === 'tools/call' && body.params?.name === 'generate_image') {
         const args = body.params?.arguments || {};
         const prompt = args.prompt || 'une image';
-        const imageUrlInput = args.image || null;
-        const requestedModel = args.model || (imageUrlInput ? 'flux-dev' : 'flux-schnell');
-        const aspectRatio = args.aspect_ratio || '1:1';
-        const outputFormat = args.output_format || 'webp';
+        
+        // Gestion souple : 'images' sous forme de tableau ou 'image' unique
+        const inputImages = Array.isArray(args.images) && args.images.length > 0 
+          ? args.images 
+          : (args.image ? [args.image] : []);
+
+        const requestedModel = args.model || (inputImages.length > 0 ? 'nano-banana-pro' : 'flux-schnell');
+        const aspectRatio = args.aspect_ratio || '16:9';
+        const outputFormat = args.output_format || 'png';
+        const resolution = args.resolution || '2k';
         const promptStrength = args.prompt_strength ?? 0.8;
 
         const selectedModelPath = MODELS[requestedModel] || MODELS['flux-schnell'];
@@ -117,12 +129,24 @@ export default async function handler(req, res) {
           prompt: prompt,
           aspect_ratio: aspectRatio,
           output_format: outputFormat,
-          output_quality: 80,
-          safety_tolerance: 5 // Filtre de sécurité débridé
+          output_quality: 90,
+          safety_tolerance: 5
         };
 
-        if (imageUrlInput) {
-          inputParams.image = imageUrlInput;
+        // Adaptation selon résolution
+        if (resolution === '2k') {
+          inputParams.megapixels = '2';
+        } else if (resolution === '4k') {
+          inputParams.megapixels = '4';
+        }
+
+        // Transmission des images de référence
+        if (inputImages.length > 0) {
+          inputParams.image = inputImages[0];
+          if (inputImages.length > 1) {
+            inputParams.extra_images = inputImages.slice(1);
+            inputParams.image_input = inputImages; // Compatibilité selon le schéma Replicate
+          }
           inputParams.prompt_strength = promptStrength;
         } else if (requestedModel === 'flux-schnell') {
           inputParams.num_inference_steps = 4;
@@ -130,7 +154,6 @@ export default async function handler(req, res) {
 
         const output = await replicate.run(selectedModelPath, { input: inputParams });
 
-        // Extraction de l'URL avec support des objets FileOutput du SDK
         const file = Array.isArray(output) ? output[0] : output;
         const imageUrl =
           typeof file === 'string'
@@ -143,7 +166,6 @@ export default async function handler(req, res) {
           throw new Error("Replicate n’a renvoyé aucune URL d’image.");
         }
 
-        // Réponse formatée en Markdown pour prévisualisation directe
         return res.status(200).json({
           jsonrpc: '2.0',
           id: body.id,
@@ -151,7 +173,7 @@ export default async function handler(req, res) {
             content: [
               {
                 type: 'text',
-                text: `![Image générée (${requestedModel} - ${aspectRatio})](${imageUrl})\n\n[Ouvrir l'image en grand](${imageUrl})`
+                text: `![Reference Sheet](${imageUrl})\n\n[Ouvrir l'image originale en grande résolution](${imageUrl})`
               }
             ]
           }
