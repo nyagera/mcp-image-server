@@ -69,8 +69,7 @@ export default async function handler(req, res) {
           }
         });
       }
-
-      // Appels d'outils
+// Appels d'outils
       if (method === 'tools/call' && body.params?.name === 'generate_image') {
         const prompt = body.params?.arguments?.prompt || 'une image';
 
@@ -84,7 +83,7 @@ export default async function handler(req, res) {
           }
         });
 
-        // Extraction robuste de l'URL pour gérer les objets FileOutput
+        // Extraction robuste de l'URL
         const file = Array.isArray(output) ? output[0] : output;
         const imageUrl =
           typeof file === 'string'
@@ -97,30 +96,17 @@ export default async function handler(req, res) {
           throw new Error("Replicate n’a renvoyé aucune URL d’image.");
         }
 
+        // Retour structuré pour forcer le rendu Markdown/Image dans ChatGPT
         return res.status(200).json({
           jsonrpc: '2.0',
           id: body.id,
           result: {
-            content: [{ type: 'text', text: `Image générée avec succès : ${imageUrl}` }]
+            content: [
+              {
+                type: 'text',
+                text: `![Image générée](${imageUrl})\n\n[Ouvrir l'image en grand](${imageUrl})`
+              }
+            ]
           }
         });
-      }
-
-      return res.status(200).json({
-        jsonrpc: '2.0',
-        id: body.id,
-        result: {}
-      });
-
-    } catch (error) {
-      console.error('[MCP ERROR]', error);
-      return res.status(500).json({
-        jsonrpc: '2.0',
-        id: req.body?.id ?? null,
-        error: { code: -32603, message: error.message }
-      });
-    }
-  }
-
-  return res.status(405).end();
-}
+      }}
