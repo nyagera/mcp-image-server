@@ -6,7 +6,7 @@ const replicate = new Replicate({
 
 const MODELS = {
   'flux-schnell': 'black-forest-labs/flux-schnell',
-  'flux-dev': 'black-forest-labs/flux-dev' // Recommandé pour img2img et safety_tolerance
+  'flux-dev': 'black-forest-labs/flux-dev'
 };
 
 export default async function handler(req, res) {
@@ -34,12 +34,12 @@ export default async function handler(req, res) {
           result: {
             protocolVersion: '2025-06-18',
             capabilities: { tools: {} },
-            serverInfo: { name: 'mcp-image-server', version: '1.2.0' }
+            serverInfo: { name: 'mcp-image-server', version: '1.2.2' }
           }
         });
       }
 
-      // Registre étendu : support img2img et safety filter
+      // Registre MCP : Restauration complète de model et output_format
       if (method === 'tools/list') {
         return res.status(200).json({
           jsonrpc: '2.0',
@@ -48,13 +48,18 @@ export default async function handler(req, res) {
             tools: [
               {
                 name: 'generate_image',
-                description: 'Générer ou modifier une image à partir d’un prompt texte (et optionnellement d’une image source). Demande à l’utilisateur le format (aspect ratio) et si une image de référence doit être utilisée.',
+                description: 'Générer ou modifier une image à partir d’un prompt texte (et optionnellement d’une image source). Demande à l’utilisateur son choix de modèle, d’aspect ratio ou de format s’ils ne sont pas précisés.',
                 inputSchema: {
                   type: 'object',
                   properties: {
                     prompt: { 
                       type: 'string', 
                       description: 'Description détaillée de l’image à générer ou des modifications à apporter' 
+                    },
+                    model: {
+                      type: 'string',
+                      enum: ['flux-schnell', 'flux-dev'],
+                      description: 'Modèle à utiliser (flux-schnell pour la rapidité, flux-dev pour plus de qualité et img2img). Par défaut flux-schnell.'
                     },
                     image: {
                       type: 'string',
@@ -63,7 +68,12 @@ export default async function handler(req, res) {
                     aspect_ratio: { 
                       type: 'string', 
                       enum: ['1:1', '16:9', '21:9', '3:2', '2:3', '4:5', '9:16'],
-                      description: 'Ratio d’aspect de l’image' 
+                      description: 'Ratio d’aspect de l’image (par défaut 1:1)' 
+                    },
+                    output_format: {
+                      type: 'string',
+                      enum: ['webp', 'png', 'jpg'],
+                      description: 'Format du fichier image de sortie (par défaut webp)'
                     },
                     prompt_strength: {
                       type: 'number',
@@ -78,35 +88,34 @@ export default async function handler(req, res) {
         });
       }
 
-      // Exécution de l'outil
+      // Exécution de l'outil avec extraction de tous les champs
       if (method === 'tools/call' && body.params?.name === 'generate_image') {
         const args = body.params?.arguments || {};
         const prompt = args.prompt || 'une image';
         const imageUrlInput = args.image || null;
+        const requestedModel = args.model || (imageUrlInput ? 'flux-dev' : 'flux-schnell');
         const aspectRatio = args.aspect_ratio || '1:1';
+        const outputFormat = args.output_format || 'webp';
         const promptStrength = args.prompt_strength ?? 0.8;
 
-        // Utilisation de flux-dev si une image source est fournie ou si safety_tolerance est requis
-        const selectedModel = imageUrlInput ? MODELS['flux-dev'] : MODELS['flux-schnell'];
+        const selectedModelPath = MODELS[requestedModel] || MODELS['flux-schnell'];
 
         const inputParams = {
           prompt: prompt,
           aspect_ratio: aspectRatio,
-          // Permet de débrider la créativité (valeurs : 1 = très strict, 5 = tolérance maximale / uniquement filtres critiques)
+          output_format: outputFormat,
+          output_quality: 80,
           safety_tolerance: 5
         };
 
-        // Ajout des paramètres img2img si une image est transmise
         if (imageUrlInput) {
           inputParams.image = imageUrlInput;
           inputParams.prompt_strength = promptStrength;
-        } else {
+        } else if (requestedModel === 'flux-schnell') {
           inputParams.num_inference_steps = 4;
-          inputParams.output_format = 'webp';
-          inputParams.output_quality = 80;
         }
 
-        const output = await replicate.run(selectedModel, { input: inputParams });
+        const output = await replicate.run(selectedModelPath, { input: inputParams });
 
         const file = Array.isArray(output) ? output[0] : output;
         const imageUrl =
