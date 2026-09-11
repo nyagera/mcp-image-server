@@ -7,10 +7,7 @@ const replicate = new Replicate({
   auth: process.env.REPLICATE_API_TOKEN,
 });
 
-// Cache global en mémoire pour les instances Vercel tièdes (warm instances)
-let transport;
-
-function buildServer() {
+function createServer() {
   const server = new Server(
     { name: 'mcp-image-server', version: '1.0.0' },
     { capabilities: { tools: {} } }
@@ -24,7 +21,7 @@ function buildServer() {
         inputSchema: {
           type: 'object',
           properties: {
-            prompt: { type: 'string', description: 'Description détaillée de l’image' }
+            prompt: { type: 'string', description: 'Description de l’image' }
           },
           required: ['prompt']
         }
@@ -37,46 +34,34 @@ function buildServer() {
       const prompt = request.params.arguments.prompt;
       const output = await replicate.run("black-forest-labs/flux-schnell", { input: { prompt } });
       const imageUrl = Array.isArray(output) ? output[0] : String(output);
-      
       return {
-        content: [
-          { type: 'text', text: `Image générée avec succès : ${imageUrl}` }
-        ]
+        content: [{ type: 'text', text: `Image générée : ${imageUrl}` }]
       };
     }
-    throw new Error("Outil introuvable");
+    throw new Error("Outil non trouvé");
   });
 
   return server;
 }
 
 export default async function handler(req, res) {
-  // Gestion des en-têtes CORS pour ChatGPT
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
 
-  const server = buildServer();
+  const server = createServer();
+  const transport = new SSEServerTransport('/api/index', res);
 
   if (req.method === 'GET') {
-    // Initialisation du canal SSE pour la découverte d'outils
-    transport = new SSEServerTransport('/api/index', res);
     await server.connect(transport);
   } else if (req.method === 'POST') {
-    // Traitement des commandes de ChatGPT
-    if (transport) {
-      await transport.handlePostMessage(req, res);
-    } else {
-      // Si la fonction serverless a été recyclée, réinstancier le transport
-      transport = new SSEServerTransport('/api/index', res);
-      await server.connect(transport);
-      await transport.handlePostMessage(req, res);
-    }
+    await server.connect(transport);
+    await transport.handlePostMessage(req, res);
   } else {
-    res.status(405).json({ error: 'Méthode non autorisée' });
+    res.status(405).json({ error: 'Method not allowed' });
   }
 }
