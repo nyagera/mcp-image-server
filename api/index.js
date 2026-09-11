@@ -7,10 +7,18 @@ const replicate = new Replicate({
   auth: process.env.REPLICATE_API_TOKEN,
 });
 
-// Stockage de la session SSE active
-let activeTransport = null;
+let transport;
 
-function createMcpServer() {
+export default async function handler(req, res) {
+  console.log(`[MCP REQ] ${req.method} - ${new Date().toISOString()}`);
+
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    return res.status(200).end();
+  }
+
   const server = new Server(
     { name: 'mcp-image-server', version: '1.0.0' },
     { capabilities: { tools: {} } }
@@ -20,11 +28,11 @@ function createMcpServer() {
     tools: [
       {
         name: 'generate_image',
-        description: 'Générer une image à partir d’un prompt texte via Replicate (FLUX)',
+        description: 'Générer une image à partir d’un prompt texte',
         inputSchema: {
           type: 'object',
           properties: {
-            prompt: { type: 'string', description: 'Description détaillée de l’image' }
+            prompt: { type: 'string', description: 'Description de l’image' }
           },
           required: ['prompt']
         }
@@ -37,44 +45,22 @@ function createMcpServer() {
       const prompt = request.params.arguments.prompt;
       const output = await replicate.run("black-forest-labs/flux-schnell", { input: { prompt } });
       const imageUrl = Array.isArray(output) ? output[0] : String(output);
-      
       return {
         content: [{ type: 'text', text: `Image générée : ${imageUrl}` }]
       };
     }
-    throw new Error("Outil introuvable");
+    throw new Error("Outil non trouvé");
   });
 
-  return server;
-}
-
-export default async function handler(req, res) {
-  // Gestion simple des requêtes OPTIONS (CORS) sans double écriture d'en-têtes
-  if (req.method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    return res.status(200).end();
-  }
-
-  const server = createMcpServer();
-
   if (req.method === 'GET') {
-    // Connexion SSE initiale
     res.setHeader('Access-Control-Allow-Origin', '*');
-    activeTransport = new SSEServerTransport('/api/index', res);
-    await server.connect(activeTransport);
+    transport = new SSEServerTransport('/api/index', res);
+    await server.connect(transport);
   } else if (req.method === 'POST') {
-    // Message POST de ChatGPT : Laisser le SDK gérer les en-têtes directement
-    if (activeTransport) {
-      await activeTransport.handlePostMessage(req, res);
-    } else {
-      // Reconnexion directe si le conteneur serverless s'est réinitialisé
-      activeTransport = new SSEServerTransport('/api/index', res);
-      await server.connect(activeTransport);
-      await activeTransport.handlePostMessage(req, res);
+    if (!transport) {
+      transport = new SSEServerTransport('/api/index', res);
+      await server.connect(transport);
     }
-  } else {
-    res.status(405).json({ error: 'Method not allowed' });
+    await transport.handlePostMessage(req, res);
   }
 }
