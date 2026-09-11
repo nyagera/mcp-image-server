@@ -5,7 +5,6 @@ const replicate = new Replicate({
 });
 
 export default async function handler(req, res) {
-  // En-têtes CORS pour autoriser ChatGPT
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -14,13 +13,11 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  // 1. Refus explicite de GET en mode Streamable HTTP pure
   if (req.method === 'GET') {
     res.setHeader('Allow', 'POST, OPTIONS');
     return res.status(405).end();
   }
 
-  // 2. Traitement des requêtes POST (JSON-RPC)
   if (req.method === 'POST') {
     try {
       const body = req.body || {};
@@ -32,12 +29,12 @@ export default async function handler(req, res) {
         protocolVersion: body.params?.protocolVersion
       });
 
-      // Traitement des notifications (pas d'ID -> réponse 202 sans corps)
+      // Notifications : réponse 202 sans corps
       if (body.id === undefined) {
         return res.status(202).end();
       }
 
-      // Handshake d'initialisation MCP (Protocol version 2025-06-18)
+      // Initialisation
       if (method === 'initialize') {
         return res.status(200).json({
           jsonrpc: '2.0',
@@ -50,7 +47,7 @@ export default async function handler(req, res) {
         });
       }
 
-      // Transmission de la liste des outils
+      // Registre de l'outil
       if (method === 'tools/list') {
         return res.status(200).json({
           jsonrpc: '2.0',
@@ -63,7 +60,7 @@ export default async function handler(req, res) {
                 inputSchema: {
                   type: 'object',
                   properties: {
-                    prompt: { type: 'string', description: 'Description de l’image' }
+                    prompt: { type: 'string', description: 'Description détaillée de l’image' }
                   },
                   required: ['prompt']
                 }
@@ -73,26 +70,42 @@ export default async function handler(req, res) {
         });
       }
 
-      // Condition stricte pour l'exécution de l'outil
+      // Appels d'outils
       if (method === 'tools/call' && body.params?.name === 'generate_image') {
         const prompt = body.params?.arguments?.prompt || 'une image';
-        
+
         const output = await replicate.run('black-forest-labs/flux-schnell', {
-          input: { prompt }
+          input: {
+            prompt: prompt,
+            num_inference_steps: 4,
+            aspect_ratio: '1:1',
+            output_format: 'webp',
+            output_quality: 80
+          }
         });
-        
-        const imageUrl = Array.isArray(output) ? output[0] : String(output);
+
+        // Extraction robuste de l'URL pour gérer les objets FileOutput
+        const file = Array.isArray(output) ? output[0] : output;
+        const imageUrl =
+          typeof file === 'string'
+            ? file
+            : typeof file?.url === 'function'
+              ? String(file.url())
+              : null;
+
+        if (!imageUrl) {
+          throw new Error("Replicate n’a renvoyé aucune URL d’image.");
+        }
 
         return res.status(200).json({
           jsonrpc: '2.0',
           id: body.id,
           result: {
-            content: [{ type: 'text', text: `Image générée : ${imageUrl}` }]
+            content: [{ type: 'text', text: `Image générée avec succès : ${imageUrl}` }]
           }
         });
       }
 
-      // Réponse par défaut pour requêtes inconnues avec ID
       return res.status(200).json({
         jsonrpc: '2.0',
         id: body.id,
