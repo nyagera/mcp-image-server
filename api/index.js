@@ -4,17 +4,22 @@ const replicate = new Replicate({
   auth: process.env.REPLICATE_API_TOKEN,
 });
 
+// Dictionnaire des modèles Replicate
 const MODELS = {
   'flux-schnell': 'black-forest-labs/flux-schnell',
-  'flux-dev': 'black-forest-labs/flux-dev'
+  'flux-dev': 'black-forest-labs/flux-dev',
+  'nano-banana-pro': 'owner/nano-banana-pro' // Remplacez "owner/nano-banana-pro" par l'identifiant exact Replicate
 };
 
 export default async function handler(req, res) {
+  // En-têtes CORS pour autoriser les requêtes
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
+
+  // Refus explicite des requêtes GET
   if (req.method === 'GET') {
     res.setHeader('Allow', 'POST, OPTIONS');
     return res.status(405).end();
@@ -25,8 +30,16 @@ export default async function handler(req, res) {
       const body = req.body || {};
       const method = body.method;
 
+      console.info('[MCP]', {
+        method,
+        id: body.id ?? null,
+        protocolVersion: body.params?.protocolVersion
+      });
+
+      // Gestion des notifications (réponse 202 sans corps)
       if (body.id === undefined) return res.status(202).end();
 
+      // Négociation d'initialisation MCP
       if (method === 'initialize') {
         return res.status(200).json({
           jsonrpc: '2.0',
@@ -34,12 +47,12 @@ export default async function handler(req, res) {
           result: {
             protocolVersion: '2025-06-18',
             capabilities: { tools: {} },
-            serverInfo: { name: 'mcp-image-server', version: '1.2.2' }
+            serverInfo: { name: 'mcp-image-server', version: '1.3.0' }
           }
         });
       }
 
-      // Registre MCP : Restauration complète de model et output_format
+      // Registre complet des outils pour ChatGPT
       if (method === 'tools/list') {
         return res.status(200).json({
           jsonrpc: '2.0',
@@ -48,7 +61,7 @@ export default async function handler(req, res) {
             tools: [
               {
                 name: 'generate_image',
-                description: 'Générer ou modifier une image à partir d’un prompt texte (et optionnellement d’une image source). Demande à l’utilisateur son choix de modèle, d’aspect ratio ou de format s’ils ne sont pas précisés.',
+                description: 'Générer ou modifier une image via Replicate (FLUX ou Nano Banana Pro). Si l’utilisateur n’a pas précisé le modèle, le format (aspect ratio) ou le format de fichier, demande-lui ses préférences avant de lancer la génération.',
                 inputSchema: {
                   type: 'object',
                   properties: {
@@ -58,12 +71,12 @@ export default async function handler(req, res) {
                     },
                     model: {
                       type: 'string',
-                      enum: ['flux-schnell', 'flux-dev'],
-                      description: 'Modèle à utiliser (flux-schnell pour la rapidité, flux-dev pour plus de qualité et img2img). Par défaut flux-schnell.'
+                      enum: ['flux-schnell', 'flux-dev', 'nano-banana-pro'],
+                      description: 'Modèle à utiliser (flux-schnell pour la rapidité, flux-dev pour img2img et qualité, nano-banana-pro). Par défaut flux-schnell.'
                     },
                     image: {
                       type: 'string',
-                      description: 'URL d’une image source pour faire du Image-to-Image (optionnel)'
+                      description: 'URL d’une image source pour le mode Image-to-Image (optionnel)'
                     },
                     aspect_ratio: { 
                       type: 'string', 
@@ -88,7 +101,7 @@ export default async function handler(req, res) {
         });
       }
 
-      // Exécution de l'outil avec extraction de tous les champs
+      // Exécution de la génération d'image
       if (method === 'tools/call' && body.params?.name === 'generate_image') {
         const args = body.params?.arguments || {};
         const prompt = args.prompt || 'une image';
@@ -105,7 +118,7 @@ export default async function handler(req, res) {
           aspect_ratio: aspectRatio,
           output_format: outputFormat,
           output_quality: 80,
-          safety_tolerance: 5
+          safety_tolerance: 5 // Filtre de sécurité débridé
         };
 
         if (imageUrlInput) {
@@ -117,6 +130,7 @@ export default async function handler(req, res) {
 
         const output = await replicate.run(selectedModelPath, { input: inputParams });
 
+        // Extraction de l'URL avec support des objets FileOutput du SDK
         const file = Array.isArray(output) ? output[0] : output;
         const imageUrl =
           typeof file === 'string'
@@ -129,6 +143,7 @@ export default async function handler(req, res) {
           throw new Error("Replicate n’a renvoyé aucune URL d’image.");
         }
 
+        // Réponse formatée en Markdown pour prévisualisation directe
         return res.status(200).json({
           jsonrpc: '2.0',
           id: body.id,
@@ -136,7 +151,7 @@ export default async function handler(req, res) {
             content: [
               {
                 type: 'text',
-                text: `![Image générée](${imageUrl})\n\n[Ouvrir l'image en grand](${imageUrl})`
+                text: `![Image générée (${requestedModel} - ${aspectRatio})](${imageUrl})\n\n[Ouvrir l'image en grand](${imageUrl})`
               }
             ]
           }
