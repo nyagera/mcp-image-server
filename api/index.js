@@ -4,11 +4,10 @@ const replicate = new Replicate({
   auth: process.env.REPLICATE_API_TOKEN,
 });
 
-// Dictionnaire des modèles Replicate
 const MODELS = {
   'flux-schnell': 'black-forest-labs/flux-schnell',
   'flux-dev': 'black-forest-labs/flux-dev',
-  'nano-banana-pro': 'owner/nano-banana-pro' // Remplacez "owner/nano-banana-pro" par l'ID Replicate exact
+  'nano-banana-pro': 'owner/nano-banana-pro' // Remplacez par l'ID exact Replicate
 };
 
 export default async function handler(req, res) {
@@ -28,12 +27,6 @@ export default async function handler(req, res) {
       const body = req.body || {};
       const method = body.method;
 
-      console.info('[MCP]', {
-        method,
-        id: body.id ?? null,
-        protocolVersion: body.params?.protocolVersion
-      });
-
       if (body.id === undefined) return res.status(202).end();
 
       if (method === 'initialize') {
@@ -43,12 +36,12 @@ export default async function handler(req, res) {
           result: {
             protocolVersion: '2025-06-18',
             capabilities: { tools: {} },
-            serverInfo: { name: 'mcp-image-server', version: '1.4.0' }
+            serverInfo: { name: 'mcp-image-server', version: '1.5.0' }
           }
         });
       }
 
-      // Registre étendu : support multi-images et résolution
+      // Registre : Support URLs HTTP + données brutes Base64 (fichiers joints ChatGPT)
       if (method === 'tools/list') {
         return res.status(200).json({
           jsonrpc: '2.0',
@@ -57,46 +50,43 @@ export default async function handler(req, res) {
             tools: [
               {
                 name: 'generate_image',
-                description: 'Générer ou modifier une image via Replicate. Supporte plusieurs images de référence (avatar, vêtements, style) et la résolution personnalisée.',
+                description: 'Générer ou modifier une image via Replicate. Si des fichiers sont joints dans le chat sans URL publique, transmets-les directement sous forme de tableau Data-URI / Base64 dans `image_data_list`.',
                 inputSchema: {
                   type: 'object',
                   properties: {
                     prompt: { 
                       type: 'string', 
-                      description: 'Description détaillée de l’image à générer ou de la référence sheet' 
+                      description: 'Description détaillée de l’image ou de la modification' 
                     },
                     model: {
                       type: 'string',
                       enum: ['flux-schnell', 'flux-dev', 'nano-banana-pro'],
-                      description: 'Modèle à utiliser (par défaut flux-dev ou nano-banana-pro pour img2img multi-références)'
-                    },
-                    image: {
-                      type: 'string',
-                      description: 'URL principale de l’image source'
+                      description: 'Modèle à utiliser'
                     },
                     images: {
                       type: 'array',
                       items: { type: 'string' },
-                      description: 'Liste d’URLs de plusieurs images de référence (ex: [URL_avatar, URL_vetement])'
+                      description: 'Liste des URLs HTTP/HTTPS des images de référence'
+                    },
+                    image_data_list: {
+                      type: 'array',
+                      items: { type: 'string' },
+                      description: 'Liste des images jointes encodées en Base64 / Data URI (ex: data:image/png;base64,...)'
                     },
                     aspect_ratio: { 
                       type: 'string', 
                       enum: ['1:1', '16:9', '21:9', '3:2', '2:3', '4:5', '9:16'],
-                      description: 'Ratio d’aspect de l’image (ex: 16:9)' 
+                      description: 'Ratio d’aspect (ex: 16:9)' 
                     },
                     resolution: {
                       type: 'string',
                       enum: ['1k', '2k', '4k'],
-                      description: 'Résolution de sortie souhaitée (par défaut 2k)'
+                      description: 'Résolution de sortie'
                     },
                     output_format: {
                       type: 'string',
                       enum: ['webp', 'png', 'jpg'],
-                      description: 'Format du fichier (par défaut png ou webp)'
-                    },
-                    prompt_strength: {
-                      type: 'number',
-                      description: 'Force du prompt en img2img (de 0.0 à 1.0, par défaut 0.8)'
+                      description: 'Format du fichier (par défaut png)'
                     }
                   },
                   required: ['prompt']
@@ -107,21 +97,22 @@ export default async function handler(req, res) {
         });
       }
 
-      // Exécution
+      // Exécution de l'outil
       if (method === 'tools/call' && body.params?.name === 'generate_image') {
         const args = body.params?.arguments || {};
         const prompt = args.prompt || 'une image';
         
-        // Gestion souple : 'images' sous forme de tableau ou 'image' unique
-        const inputImages = Array.isArray(args.images) && args.images.length > 0 
-          ? args.images 
-          : (args.image ? [args.image] : []);
+        // Regroupement des images transmises (URLs HTTP ou chaînes Base64)
+        const rawImages = [
+          ...(Array.isArray(args.images) ? args.images : []),
+          ...(Array.isArray(args.image_data_list) ? args.image_data_list : []),
+          ...(args.image ? [args.image] : [])
+        ];
 
-        const requestedModel = args.model || (inputImages.length > 0 ? 'nano-banana-pro' : 'flux-schnell');
+        const requestedModel = args.model || (rawImages.length > 0 ? 'nano-banana-pro' : 'flux-schnell');
         const aspectRatio = args.aspect_ratio || '16:9';
         const outputFormat = args.output_format || 'png';
         const resolution = args.resolution || '2k';
-        const promptStrength = args.prompt_strength ?? 0.8;
 
         const selectedModelPath = MODELS[requestedModel] || MODELS['flux-schnell'];
 
@@ -133,21 +124,16 @@ export default async function handler(req, res) {
           safety_tolerance: 5
         };
 
-        // Adaptation selon résolution
-        if (resolution === '2k') {
-          inputParams.megapixels = '2';
-        } else if (resolution === '4k') {
-          inputParams.megapixels = '4';
-        }
+        if (resolution === '2k') inputParams.megapixels = '2';
+        if (resolution === '4k') inputParams.megapixels = '4';
 
-        // Transmission des images de référence
-        if (inputImages.length > 0) {
-          inputParams.image = inputImages[0];
-          if (inputImages.length > 1) {
-            inputParams.extra_images = inputImages.slice(1);
-            inputParams.image_input = inputImages; // Compatibilité selon le schéma Replicate
+        // Transmission des images (Replicate accepte nativement les Data URIs base64)
+        if (rawImages.length > 0) {
+          inputParams.image = rawImages[0];
+          if (rawImages.length > 1) {
+            inputParams.extra_images = rawImages.slice(1);
+            inputParams.image_input = rawImages;
           }
-          inputParams.prompt_strength = promptStrength;
         } else if (requestedModel === 'flux-schnell') {
           inputParams.num_inference_steps = 4;
         }
@@ -173,7 +159,7 @@ export default async function handler(req, res) {
             content: [
               {
                 type: 'text',
-                text: `![Reference Sheet](${imageUrl})\n\n[Ouvrir l'image originale en grande résolution](${imageUrl})`
+                text: `![Reference Sheet](${imageUrl})\n\n[Ouvrir l'image en pleine résolution](${imageUrl})`
               }
             ]
           }
