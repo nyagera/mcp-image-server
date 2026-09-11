@@ -4,10 +4,11 @@ const replicate = new Replicate({
   auth: process.env.REPLICATE_API_TOKEN,
 });
 
+// Chemins réels et valides sur Replicate
 const MODELS = {
   'flux-schnell': 'black-forest-labs/flux-schnell',
   'flux-dev': 'black-forest-labs/flux-dev',
-  'nano-banana-pro': 'owner/nano-banana-pro' // Remplacez par l'ID exact Replicate
+  'nano-banana-pro': 'black-forest-labs/flux-1.1-pro-ultra' // Modèle pro ultra haute résolution avec support multi-références
 };
 
 export default async function handler(req, res) {
@@ -36,12 +37,11 @@ export default async function handler(req, res) {
           result: {
             protocolVersion: '2025-06-18',
             capabilities: { tools: {} },
-            serverInfo: { name: 'mcp-image-server', version: '1.5.0' }
+            serverInfo: { name: 'mcp-image-server', version: '1.5.1' }
           }
         });
       }
 
-      // Registre : Support URLs HTTP + données brutes Base64 (fichiers joints ChatGPT)
       if (method === 'tools/list') {
         return res.status(200).json({
           jsonrpc: '2.0',
@@ -50,7 +50,7 @@ export default async function handler(req, res) {
             tools: [
               {
                 name: 'generate_image',
-                description: 'Générer ou modifier une image via Replicate. Si des fichiers sont joints dans le chat sans URL publique, transmets-les directement sous forme de tableau Data-URI / Base64 dans `image_data_list`.',
+                description: 'Générer ou modifier une image via Replicate. Supporte la transmission d’images jointes en Base64 via `image_data_list`.',
                 inputSchema: {
                   type: 'object',
                   properties: {
@@ -71,7 +71,7 @@ export default async function handler(req, res) {
                     image_data_list: {
                       type: 'array',
                       items: { type: 'string' },
-                      description: 'Liste des images jointes encodées en Base64 / Data URI (ex: data:image/png;base64,...)'
+                      description: 'Liste des images jointes encodées en Base64 / Data URI'
                     },
                     aspect_ratio: { 
                       type: 'string', 
@@ -97,12 +97,10 @@ export default async function handler(req, res) {
         });
       }
 
-      // Exécution de l'outil
       if (method === 'tools/call' && body.params?.name === 'generate_image') {
         const args = body.params?.arguments || {};
         const prompt = args.prompt || 'une image';
         
-        // Regroupement des images transmises (URLs HTTP ou chaînes Base64)
         const rawImages = [
           ...(Array.isArray(args.images) ? args.images : []),
           ...(Array.isArray(args.image_data_list) ? args.image_data_list : []),
@@ -114,7 +112,7 @@ export default async function handler(req, res) {
         const outputFormat = args.output_format || 'png';
         const resolution = args.resolution || '2k';
 
-        const selectedModelPath = MODELS[requestedModel] || MODELS['flux-schnell'];
+        const selectedModelPath = MODELS[requestedModel] || MODELS['flux-dev'];
 
         const inputParams = {
           prompt: prompt,
@@ -124,15 +122,12 @@ export default async function handler(req, res) {
           safety_tolerance: 5
         };
 
-        if (resolution === '2k') inputParams.megapixels = '2';
-        if (resolution === '4k') inputParams.megapixels = '4';
+        if (resolution === '2k') inputParams.raw = true;
 
-        // Transmission des images (Replicate accepte nativement les Data URIs base64)
         if (rawImages.length > 0) {
-          inputParams.image = rawImages[0];
+          inputParams.image_prompt = rawImages[0];
           if (rawImages.length > 1) {
-            inputParams.extra_images = rawImages.slice(1);
-            inputParams.image_input = rawImages;
+            inputParams.image_prompt_2 = rawImages[1];
           }
         } else if (requestedModel === 'flux-schnell') {
           inputParams.num_inference_steps = 4;
