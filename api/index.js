@@ -1,5 +1,5 @@
 import Replicate from 'replicate';
-import { randomBytes } from 'crypto';
+import { randomBytes, timingSafeEqual } from 'crypto';
 import { signToken, verifyToken, verifyPkce } from '../lib/oauth.js';
 
 const replicate = new Replicate({
@@ -47,24 +47,43 @@ function renderAuthorizeForm(params, error) {
 }
 
 /**
- * Vérifie le bearer token envoyé par le client MCP. Accepte deux formats :
- * 1. Un access token OAuth signé (émis par /api/oauth/token) — utilisé par
- *    Claude.ai / ChatGPT quand ils font le flow OAuth complet.
- * 2. Le MCP_AUTH_TOKEN brut envoyé directement — utilisé par les clients
- *    qui ne supportent qu'un simple header statique (Claude Code/Desktop,
- *    ou certaines configs avancées de ChatGPT avec "Bearer token env var").
+ * Accepte Authorization: Bearer <token> (OAuth ou secret statique),
+ * ou MCP_BEARER_TOKEN: <token> (avec ou sans prefixe Bearer).
+ * Authorization est prioritaire : un en-tete invalide ne declenche
+ * jamais de repli vers le second mecanisme.
  */
 function isAuthorized(req) {
-  const header = req.headers['authorization'];
-  if (!header) return false;
-  const token = header.replace(/^Bearer\s+/i, '');
+  const headers = req.headers || {};
+  const hasAuthorization = headers.authorization !== undefined;
+  const header = hasAuthorization
+    ? headers.authorization
+    : headers.mcp_bearer_token;
 
-  if (verifyToken(token, 'access')) return true;
-  if (process.env.MCP_AUTH_TOKEN && token === process.env.MCP_AUTH_TOKEN) return true;
+  // Node normalise les noms d'en-tetes en minuscules.
+  if (typeof header !== 'string') return false;
+  const value = header.trim();
+  const bearer = /^Bearer[ \t]+([^\s,]+)$/i.exec(value);
+  const token = hasAuthorization
+    ? bearer?.[1]
+    : (bearer?.[1] || (/^[^\s,]+$/.test(value) ? value : null));
+  if (!token) return false;
 
-  return false;
+  const secret = process.env.MCP_AUTH_TOKEN;
+  if (secret) {
+    const received = Buffer.from(token, 'utf8');
+    const expected = Buffer.from(secret, 'utf8');
+    if (received.length === expected.length && timingSafeEqual(received, expected)) {
+      return true;
+    }
+  }
+
+  try {
+    return Boolean(verifyToken(token, 'access'));
+  } catch {
+    // Certains verificateurs levent une exception pour un jeton malforme.
+    return false;
+  }
 }
-
 async function handleWellKnownAuthServer(req, res) {
   const origin = `https://${req.headers.host}`;
   res.status(200).json({
@@ -421,7 +440,7 @@ async function handleMcp(req, res) {
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, MCP_BEARER_TOKEN');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
