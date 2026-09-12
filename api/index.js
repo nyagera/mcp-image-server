@@ -1,5 +1,5 @@
 import Replicate from 'replicate';
-import { randomBytes, timingSafeEqual } from 'crypto';
+import { randomBytes } from 'crypto';
 import { signToken, verifyToken, verifyPkce } from '../lib/oauth.js';
 
 const replicate = new Replicate({
@@ -47,43 +47,33 @@ function renderAuthorizeForm(params, error) {
 }
 
 /**
- * Accepte Authorization: Bearer <token> (OAuth ou secret statique),
- * ou MCP_BEARER_TOKEN: <token> (avec ou sans prefixe Bearer).
- * Authorization est prioritaire : un en-tete invalide ne declenche
- * jamais de repli vers le second mecanisme.
+ * Vérifie le token envoyé par le client MCP. Accepte plusieurs formats
+ * pour couvrir différents clients :
+ * 1. Un access token OAuth signé dans "Authorization: Bearer ..."
+ *    (Claude.ai / ChatGPT avec flow OAuth complet).
+ * 2. Le MCP_AUTH_TOKEN brut dans "Authorization: Bearer ..."
+ *    (Claude Code/Desktop, ou config avancée avec header standard).
+ * 3. Le MCP_AUTH_TOKEN brut dans un header personnalisé nommé
+ *    "MCP_BEARER_TOKEN" (certaines configs ChatGPT envoient le nom
+ *    de la variable comme nom de header, plutôt que le header
+ *    Authorization standard).
  */
 function isAuthorized(req) {
-  const headers = req.headers || {};
-  const hasAuthorization = headers.authorization !== undefined;
-  const header = hasAuthorization
-    ? headers.authorization
-    : headers.mcp_bearer_token;
-
-  // Node normalise les noms d'en-tetes en minuscules.
-  if (typeof header !== 'string') return false;
-  const value = header.trim();
-  const bearer = /^Bearer[ \t]+([^\s,]+)$/i.exec(value);
-  const token = hasAuthorization
-    ? bearer?.[1]
-    : (bearer?.[1] || (/^[^\s,]+$/.test(value) ? value : null));
-  if (!token) return false;
-
-  const secret = process.env.MCP_AUTH_TOKEN;
-  if (secret) {
-    const received = Buffer.from(token, 'utf8');
-    const expected = Buffer.from(secret, 'utf8');
-    if (received.length === expected.length && timingSafeEqual(received, expected)) {
-      return true;
-    }
+  const authHeader = req.headers['authorization'];
+  if (authHeader) {
+    const token = authHeader.replace(/^Bearer\s+/i, '');
+    if (verifyToken(token, 'access')) return true;
+    if (process.env.MCP_AUTH_TOKEN && token === process.env.MCP_AUTH_TOKEN) return true;
   }
 
-  try {
-    return Boolean(verifyToken(token, 'access'));
-  } catch {
-    // Certains verificateurs levent une exception pour un jeton malforme.
-    return false;
+  const customHeader = req.headers['mcp_bearer_token'] || req.headers['mcp-bearer-token'];
+  if (customHeader && process.env.MCP_AUTH_TOKEN && customHeader === process.env.MCP_AUTH_TOKEN) {
+    return true;
   }
+
+  return false;
 }
+
 async function handleWellKnownAuthServer(req, res) {
   const origin = `https://${req.headers.host}`;
   res.status(200).json({
@@ -440,7 +430,7 @@ async function handleMcp(req, res) {
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, MCP_BEARER_TOKEN');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
@@ -449,6 +439,12 @@ export default async function handler(req, res) {
   const pathname = (req.url || '').split('?')[0];
 
   if (pathname === '/.well-known/oauth-authorization-server') {
+    return handleWellKnownAuthServer(req, res);
+  }
+  if (pathname === '/.well-known/openid-configuration') {
+    // Certains clients (dont ChatGPT) interrogent ce chemin de découverte
+    // OIDC en plus (ou à la place) de /.well-known/oauth-authorization-server.
+    // On renvoie les mêmes métadonnées, cela suffit pour la découverte OAuth de base.
     return handleWellKnownAuthServer(req, res);
   }
   if (pathname === '/.well-known/oauth-protected-resource') {
