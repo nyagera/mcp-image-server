@@ -46,12 +46,23 @@ function renderAuthorizeForm(params, error) {
   `;
 }
 
-/** Vérifie le bearer token OAuth envoyé par le client MCP. */
+/**
+ * Vérifie le bearer token envoyé par le client MCP. Accepte deux formats :
+ * 1. Un access token OAuth signé (émis par /api/oauth/token) — utilisé par
+ *    Claude.ai / ChatGPT quand ils font le flow OAuth complet.
+ * 2. Le MCP_AUTH_TOKEN brut envoyé directement — utilisé par les clients
+ *    qui ne supportent qu'un simple header statique (Claude Code/Desktop,
+ *    ou certaines configs avancées de ChatGPT avec "Bearer token env var").
+ */
 function isAuthorized(req) {
   const header = req.headers['authorization'];
   if (!header) return false;
   const token = header.replace(/^Bearer\s+/i, '');
-  return Boolean(verifyToken(token, 'access'));
+
+  if (verifyToken(token, 'access')) return true;
+  if (process.env.MCP_AUTH_TOKEN && token === process.env.MCP_AUTH_TOKEN) return true;
+
+  return false;
 }
 
 async function handleWellKnownAuthServer(req, res) {
