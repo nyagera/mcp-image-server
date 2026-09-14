@@ -247,10 +247,12 @@ async function handleMcp(req, res) {
     const body = req.body || {};
     const method = body.method;
 
+    console.log('[MCP DEBUG] incoming method:', method, 'body:', JSON.stringify(body));
+
     if (body.id === undefined) return res.status(202).end();
 
     if (method === 'initialize') {
-      return res.status(200).json({
+      const response = {
         jsonrpc: '2.0',
         id: body.id,
         result: {
@@ -258,11 +260,13 @@ async function handleMcp(req, res) {
           capabilities: { tools: {} },
           serverInfo: { name: 'mcp-image-server', version: '1.7.0' }
         }
-      });
+      };
+      console.log('[MCP DEBUG] initialize response:', JSON.stringify(response));
+      return res.status(200).json(response);
     }
 
     if (method === 'tools/list') {
-      return res.status(200).json({
+      const response = {
         jsonrpc: '2.0',
         id: body.id,
         result: {
@@ -313,7 +317,9 @@ async function handleMcp(req, res) {
             }
           ]
         }
-      });
+      };
+      console.log('[MCP DEBUG] tools/list response:', JSON.stringify(response));
+      return res.status(200).json(response);
     }
 
     if (method === 'tools/call' && body.params?.name === 'generate_image') {
@@ -436,27 +442,28 @@ export default async function handler(req, res) {
 
   // req.url contient le chemin relatif tel que reçu par la fonction,
   // ex: "/.well-known/oauth-authorization-server" ou "/api/oauth/token"
-  const pathname = (req.url || '').split('?')[0];
+  const pathname = (req.url || '').split('?')[0].replace(/\/$/, '');
 
-  if (pathname === '/.well-known/oauth-authorization-server') {
+  // On utilise endsWith() plutôt qu'une égalité stricte : certains clients
+  // (ex: Perplexity) envoient parfois un chemin composé du type
+  // "/api/index/.well-known/oauth-protected-resource" au lieu du chemin
+  // standard à la racine — on veut répondre correctement dans les deux cas.
+  if (pathname.endsWith('/.well-known/oauth-authorization-server')) {
     return handleWellKnownAuthServer(req, res);
   }
-  if (pathname === '/.well-known/openid-configuration') {
-    // Certains clients (dont ChatGPT) interrogent ce chemin de découverte
-    // OIDC en plus (ou à la place) de /.well-known/oauth-authorization-server.
-    // On renvoie les mêmes métadonnées, cela suffit pour la découverte OAuth de base.
+  if (pathname.endsWith('/.well-known/openid-configuration')) {
     return handleWellKnownAuthServer(req, res);
   }
-  if (pathname === '/.well-known/oauth-protected-resource') {
+  if (pathname.endsWith('/.well-known/oauth-protected-resource')) {
     return handleWellKnownProtectedResource(req, res);
   }
-  if (pathname === '/api/oauth/register') {
+  if (pathname.endsWith('/api/oauth/register')) {
     return handleOauthRegister(req, res);
   }
-  if (pathname === '/api/oauth/authorize') {
+  if (pathname.endsWith('/api/oauth/authorize')) {
     return handleOauthAuthorize(req, res);
   }
-  if (pathname === '/api/oauth/token') {
+  if (pathname.endsWith('/api/oauth/token')) {
     return handleOauthToken(req, res);
   }
 
