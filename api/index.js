@@ -421,7 +421,19 @@ async function handleMcp(req, res) {
       });
     }
 
-    return res.status(200).json({ jsonrpc: '2.0', id: body.id, result: {} });
+    // Méthode non reconnue : on renvoie une vraie erreur JSON-RPC
+    // (-32601 "method not found"), plutôt qu'un succès avec un résultat
+    // vide. C'est important pour des méthodes de sondage optionnelles
+    // comme "server/discover" (utilisée par le client OpenAI/Codex) :
+    // une erreur explicite fait basculer le client vers le handshake
+    // standard "initialize" + "tools/list" qu'on supporte bien.
+    // Un succès vide, au contraire, lui fait croire que la découverte
+    // a réussi sans capacités, d'où l'échec silencieux observé.
+    return res.status(200).json({
+      jsonrpc: '2.0',
+      id: body.id,
+      error: { code: -32601, message: `Method not found: ${method}` }
+    });
 
   } catch (error) {
     console.error('[MCP ERROR]', error);
