@@ -11,6 +11,7 @@ const MODELS = {
   'flux-schnell': 'black-forest-labs/flux-schnell',
   'flux-dev': 'black-forest-labs/flux-dev',
   'flux-1.1-pro-ultra': 'black-forest-labs/flux-1.1-pro-ultra',
+  'flux-dev-realism': 'xlabs-ai/flux-dev-realism',
   'nano-banana-pro': 'google/nano-banana-pro'
 };
 
@@ -258,7 +259,7 @@ async function handleMcp(req, res) {
         result: {
           protocolVersion: '2025-06-18',
           capabilities: { tools: {} },
-          serverInfo: { name: 'mcp-image-server', version: '1.7.0' }
+          serverInfo: { name: 'mcp-image-server', version: '1.8.0' }
         }
       };
       console.log('[MCP DEBUG] initialize response:', JSON.stringify(response));
@@ -273,7 +274,7 @@ async function handleMcp(req, res) {
           tools: [
             {
               name: 'generate_image',
-              description: 'Générer ou modifier une image via Replicate. Supporte plusieurs références (avatar + vêtements) via Nano Banana Pro et le mode ultra via FLUX 1.1 Pro Ultra.',
+              description: 'Générer ou modifier une image via Replicate. Supporte plusieurs références (avatar + vêtements) via Nano Banana Pro, le mode ultra via FLUX 1.1 Pro Ultra, et un rendu photoréaliste via FLUX Dev Realism.',
               inputSchema: {
                 type: 'object',
                 properties: {
@@ -283,8 +284,8 @@ async function handleMcp(req, res) {
                   },
                   model: {
                     type: 'string',
-                    enum: ['flux-schnell', 'flux-dev', 'flux-1.1-pro-ultra', 'nano-banana-pro'],
-                    description: 'Modèle à utiliser. Utilisez nano-banana-pro pour plusieurs images de référence.'
+                    enum: ['flux-schnell', 'flux-dev', 'flux-1.1-pro-ultra', 'flux-dev-realism', 'nano-banana-pro'],
+                    description: 'Modèle à utiliser. Utilisez nano-banana-pro pour plusieurs images de référence, flux-dev-realism pour un rendu photoréaliste (texte-vers-image uniquement).'
                   },
                   images: {
                     type: 'array',
@@ -377,6 +378,26 @@ async function handleMcp(req, res) {
         }
 
         output = await replicate.run(MODELS['flux-1.1-pro-ultra'], { input: inputParams });
+      } else if (requestedModel === 'flux-dev-realism') {
+        if (rawImages.length > 0) {
+          throw new Error(
+            'flux-dev-realism ne prend pas d\u2019image en entrée (texte-vers-image uniquement). ' +
+            'Choisissez flux-dev ou flux-1.1-pro-ultra pour une référence image.'
+          );
+        }
+
+        output = await replicate.run(MODELS['flux-dev-realism'], {
+          input: {
+            prompt,
+            aspect_ratio: aspectRatio,
+            guidance: 3.5,
+            lora_strength: 0.8,
+            num_outputs: 1,
+            num_inference_steps: 30,
+            output_format: outputFormat,
+            output_quality: 80
+          }
+        });
       } else {
         const inputParams = {
           prompt,
