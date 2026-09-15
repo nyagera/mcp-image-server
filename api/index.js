@@ -11,7 +11,7 @@ const MODELS = {
   'flux-schnell': 'black-forest-labs/flux-schnell',
   'flux-dev': 'black-forest-labs/flux-dev',
   'flux-1.1-pro-ultra': 'black-forest-labs/flux-1.1-pro-ultra',
-  'flux-dev-realism': 'xlabs-ai/flux-dev-realism',
+  'flux-dev-realism': 'xlabs-ai/flux-dev-realism:39b3434f194f87a900d1bc2b6d4b983e90f0dde1d5022c27b52c143d670758fa',
   'nano-banana-pro': 'google/nano-banana-pro'
 };
 
@@ -259,7 +259,7 @@ async function handleMcp(req, res) {
         result: {
           protocolVersion: '2025-06-18',
           capabilities: { tools: {} },
-          serverInfo: { name: 'mcp-image-server', version: '1.8.0' }
+          serverInfo: { name: 'mcp-image-server', version: '1.8.1' }
         }
       };
       console.log('[MCP DEBUG] initialize response:', JSON.stringify(response));
