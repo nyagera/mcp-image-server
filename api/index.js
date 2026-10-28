@@ -531,12 +531,15 @@ async function handleMcp(req, res) {
           }
         );
       } else if (requestedModel === 'qwen-image-3-pro') {
-        const inputParams = {
-          prompt,
-          aspect_ratio: aspectRatio,
-          output_format: outputFormat
-        };
-        if (rawImages.length >= 1) {
+        const QWEN_RATIOS = ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '2:1', '1:2'];
+        if (!QWEN_RATIOS.includes(aspectRatio)) {
+          throw new Error(`qwen-image-3-pro ne supporte pas le ratio ${aspectRatio}. Ratios possibles : ${QWEN_RATIOS.join(', ')}.`);
+        }
+        if (rawImages.length > 1) {
+          throw new Error('qwen-image-3-pro accepte une seule image de référence.');
+        }
+        const inputParams = { prompt, aspect_ratio: aspectRatio };
+        if (rawImages.length === 1) {
           inputParams.image = rawImages[0];
         }
         output = await replicate.run(MODELS['qwen-image-3-pro'], { input: inputParams });
