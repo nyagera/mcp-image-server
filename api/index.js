@@ -66,37 +66,33 @@ function getGenerationCost(model, resolution = '2k') {
 // - Extension via la variable d'environnement ALLOWED_REDIRECT_URIS
 //   (préfixes séparés par des virgules), ex :
 //   ALLOWED_REDIRECT_URIS="https://mon-app.exemple/callback,https://autre.org/cb"
-const VALID_REDIRECT_PREFIXES = [
-  'https://chatgpt.com/',            // connecteurs MCP ChatGPT
-  'https://claude.ai/',               // connecteurs MCP Claude
-  'https://goose.ai/',                // GooseAI
-  'https://vscode.dev/',              // VS Code (MCP OAuth)
-  'https://insiders.vscode.dev/',
-  'http://localhost:',                // développement local (RFC 8252)
-  'http://127.0.0.1:'
-].concat(
-  (process.env.ALLOWED_REDIRECT_URIS || '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-);
+const ALLOWED_HTTPS_HOSTS = ['claude.ai', 'claude.com', 'chatgpt.com', 'vscode.dev', 'insiders.vscode.dev'];
+const EXTRA_REDIRECTS = (process.env.ALLOWED_REDIRECT_URIS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean); // URI exactes
 
 function validateRedirectUri(redirectUri) {
   if (typeof redirectUri !== 'string' || redirectUri.length === 0) {
     return { ok: false, reason: 'redirect_uri manquante' };
   }
+  let u;
   try {
-    new URL(redirectUri);
+    u = new URL(redirectUri);
   } catch {
     return { ok: false, reason: 'redirect_uri malformée' };
   }
-  const whitelisted = VALID_REDIRECT_PREFIXES.some((prefix) =>
-    redirectUri.startsWith(prefix)
-  );
-  if (!whitelisted) {
-    return { ok: false, reason: 'redirect_uri non autorisée (liste blanche)' };
+  if (u.username || u.password) {
+    return { ok: false, reason: 'identifiants interdits dans la redirect_uri' };
   }
-  return { ok: true };
+  if (EXTRA_REDIRECTS.includes(redirectUri)) return { ok: true };
+
+  const isLocal = u.protocol === 'http:' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1');
+  const isKnown = u.protocol === 'https:' && ALLOWED_HTTPS_HOSTS.includes(u.hostname);
+  if (isLocal || isKnown) return { ok: true };
+
+  console.info('[OAUTH] redirect refusée, hôte :', u.hostname);
+  return { ok: false, reason: 'redirect_uri non autorisée (liste blanche)' };
 }
 
 // ============================================================================
