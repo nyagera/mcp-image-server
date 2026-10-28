@@ -41,9 +41,9 @@ const MODELS = {
 const PRICING = {
   'flux-schnell': 0.003,
   'flux-dev': 0.025,
-  'flux-1.1-pro-ultra': 0.06,   // facturé x2 en résolution 4k
-  'flux-dev-realism': 0.03,
-  'nano-banana-pro': null,   // à vérifier sur la page Replicate
+  'flux-1.1-pro-ultra': 0.06,
+  'flux-dev-realism': 0.037,   // estimation : facturé au temps GPU
+  'nano-banana-pro': { '1k': 0.15, '2k': 0.15, '4k': 0.30 },
   'seedream-pro-5': { '1k': 0.045, '2k': 0.09 },
   'qwen-image-3-pro': 0.04
 };
@@ -55,9 +55,6 @@ function getGenerationCost(model, resolution = '2k') {
   if (typeof base === 'object') {
     const p = base[String(resolution).toLowerCase()];
     return p === undefined ? null : p;
-  }
-  if (model === 'flux-1.1-pro-ultra' && String(resolution).toLowerCase() === '4k') {
-    return +(base * 2).toFixed(3);
   }
   return base;
 }
@@ -650,7 +647,7 @@ async function handleMcp(req, res) {
       });
 
       const costLine = estimatedCost !== null
-        ? `\n\n💰 Coût estimé de la génération : $${estimatedCost} (${requestedModel}${requestedModel === 'flux-1.1-pro-ultra' && String(resolution).toLowerCase() === '4k' ? ', 4k' : ''})`
+        ? `\n\n💰 Coût estimé de la génération : $${estimatedCost} (${requestedModel}${typeof PRICING[requestedModel] === 'object' && PRICING[requestedModel] !== null ? ', ' + String(resolution).toLowerCase() : ''})`
         : '';
 
       return res.status(200).json({
