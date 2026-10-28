@@ -43,14 +43,19 @@ const PRICING = {
   'flux-dev': 0.025,
   'flux-1.1-pro-ultra': 0.06,   // facturé x2 en résolution 4k
   'flux-dev-realism': 0.03,
-  'nano-banana-pro': 0.039,
-  'seedream-pro-5': 0.06,
-  'qwen-image-3-pro': 0.05
+  'nano-banana-pro': null,   // à vérifier sur la page Replicate
+  'seedream-pro-5': { '1k': 0.045, '2k': 0.09 },
+  'qwen-image-3-pro': 0.04
 };
 
 function getGenerationCost(model, resolution = '2k') {
   const base = PRICING[model];
   if (base === undefined) return null;
+  if (base === null) return null;
+  if (typeof base === 'object') {
+    const p = base[String(resolution).toLowerCase()];
+    return p === undefined ? null : p;
+  }
   if (model === 'flux-1.1-pro-ultra' && String(resolution).toLowerCase() === '4k') {
     return +(base * 2).toFixed(3);
   }
