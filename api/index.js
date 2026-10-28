@@ -30,7 +30,7 @@ const MODELS = {
   'flux-1.1-pro-ultra': 'black-forest-labs/flux-1.1-pro-ultra',
   'flux-dev-realism': 'xlabs-ai/flux-dev-realism:39b3434f194f87a900d1bc2b6d4b983e90f0dde1d5022c27b52c143d670758fa',
   'nano-banana-pro': 'google/nano-banana-pro',
-  'seedream-pro-5': 'bytedance/seedream-pro-5',
+  'seedream-pro-5': 'bytedance/seedream-5-pro',
   'qwen-image-3-pro': 'alibaba/qwen-image-3-pro'
 };
 
@@ -448,7 +448,7 @@ async function handleMcp(req, res) {
                   },
                   model: {
                     type: 'string',
-                    enum: ['flux-schnell', 'flux-dev', 'flux-1.1-pro-ultra', 'flux-dev-realism', 'nano-banana-pro', 'qwen-image-3-pro'],
+                    enum: ['flux-schnell', 'flux-dev', 'flux-1.1-pro-ultra', 'flux-dev-realism', 'nano-banana-pro', 'seedream-pro-5', 'qwen-image-3-pro'],
                     description: 'Modèle à utiliser. nano-banana-pro ou seedream-pro-5 pour plusieurs images de référence, flux-dev-realism pour un rendu photoréaliste (texte-vers-image uniquement), qwen-image-3-pro pour une image de référence.'
                   },
                   images: {
@@ -517,7 +517,7 @@ async function handleMcp(req, res) {
 
       let output;
 
-      if (requestedModel === 'nano-banana-pro' || requestedModel === 'seedream-pro-5') {
+      if (requestedModel === 'nano-banana-pro') {
         output = await replicate.run(
           MODELS[requestedModel],
           {
@@ -530,6 +530,28 @@ async function handleMcp(req, res) {
             }
           }
         );
+      } else if (requestedModel === 'seedream-pro-5') {
+        const SEEDREAM_RATIOS = ['1:1', '4:3', '3:4', '16:9', '9:16', '3:2', '2:3', '21:9'];
+        const SEEDREAM_SIZES = { '1k': '1K', '2k': '2K' };
+        const size = SEEDREAM_SIZES[String(resolution).toLowerCase()];
+        if (!size) {
+          throw new Error('seedream-pro-5 supporte uniquement les résolutions 1k et 2k.');
+        }
+        if (!SEEDREAM_RATIOS.includes(aspectRatio)) {
+          throw new Error(`seedream-pro-5 ne supporte pas le ratio ${aspectRatio}. Ratios possibles : ${SEEDREAM_RATIOS.join(', ')}.`);
+        }
+        if (outputFormat === 'webp') {
+          throw new Error('seedream-pro-5 supporte uniquement les formats png et jpg.');
+        }
+        output = await replicate.run(MODELS['seedream-pro-5'], {
+          input: {
+            prompt,
+            image_input: rawImages,
+            size,
+            aspect_ratio: aspectRatio,
+            output_format: outputFormat === 'jpg' ? 'jpeg' : 'png'
+          }
+        });
       } else if (requestedModel === 'qwen-image-3-pro') {
         const QWEN_RATIOS = ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '2:1', '1:2'];
         if (!QWEN_RATIOS.includes(aspectRatio)) {
