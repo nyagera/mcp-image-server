@@ -31,7 +31,7 @@ const MODELS = {
   'flux-dev-realism': 'xlabs-ai/flux-dev-realism:39b3434f194f87a900d1bc2b6d4b983e90f0dde1d5022c27b52c143d670758fa',
   'nano-banana-pro': 'google/nano-banana-pro',
   'seedream-pro-5': 'bytedance/seedream-pro-5',
-  'qwen-image-3-pro': 'qwen/qwen-image-3-pro'
+  'qwen-image-3-pro': 'alibaba/qwen-image-3-pro'
 };
 
 // ============================================================================
@@ -448,7 +448,7 @@ async function handleMcp(req, res) {
                   },
                   model: {
                     type: 'string',
-                    enum: ['flux-schnell', 'flux-dev', 'flux-1.1-pro-ultra', 'flux-dev-realism', 'nano-banana-pro', 'seedream-pro-5', 'qwen-image-3-pro'],
+                    enum: ['flux-schnell', 'flux-dev', 'flux-1.1-pro-ultra', 'flux-dev-realism', 'nano-banana-pro', 'qwen-image-3-pro'],
                     description: 'Modèle à utiliser. nano-banana-pro ou seedream-pro-5 pour plusieurs images de référence, flux-dev-realism pour un rendu photoréaliste (texte-vers-image uniquement), qwen-image-3-pro pour une image de référence.'
                   },
                   images: {
