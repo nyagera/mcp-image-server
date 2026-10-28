@@ -131,7 +131,7 @@ function escapeHtml(str) {
 
 function renderAuthorizeForm(params, error) {
   const hidden = Object.entries(params)
-    .map(([key, value]) => `<input type="hidden" name="${key}" value="${escapeHtml(value || '')}" />`)
+    .map(([key, value]) => `<input type="hidden" name="${escapeHtml(String(key))}" value="${escapeHtml(String(value ?? ''))}" />`)
     .join('\n');
 
   return `
@@ -270,7 +270,9 @@ async function handleOauthAuthorize(req, res) {
     }
 
     const body = typeof req.body === 'object' && req.body ? req.body : {};
-    const submittedParams = { ...params, ...body };
+    const submittedParams = Object.fromEntries(
+      Object.keys(params).map((k) => [k, body[k] ?? params[k]])
+    );
     const password = body.password || '';
 
     // SÉCURITÉ — liste blanche sur la redirect_uri soumise.
