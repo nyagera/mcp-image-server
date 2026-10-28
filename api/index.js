@@ -1,21 +1,130 @@
 import Replicate from 'replicate';
 import { randomBytes } from 'crypto';
-import { signToken, verifyToken, verifyPkce } from '../lib/oauth.js';
+import { signToken, verifyToken, verifyPkce, constantTimeCompare } from '../lib/oauth.js';
+
+// ============================================================================
+// SÉCURITÉ — FAIL-CLOSED
+// ============================================================================
+// Si un secret indispensable est absent, le serveur refuse de démarrer :
+// mieux vaut ne rien servir que servir sans authentification (fail-open).
+// (lib/oauth.js applique la même règle au chargement.)
+const MCP_AUTH_TOKEN = process.env.MCP_AUTH_TOKEN;
+if (!MCP_AUTH_TOKEN) {
+  throw new Error('MCP_AUTH_TOKEN is not set. Refusing to start (fail-closed).');
+}
+
+const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
+if (!REPLICATE_API_TOKEN) {
+  throw new Error('REPLICATE_API_TOKEN is not set. Refusing to start (fail-closed).');
+}
 
 const replicate = new Replicate({
-  auth: process.env.REPLICATE_API_TOKEN,
+  auth: REPLICATE_API_TOKEN,
 });
 
-// Mapping explicite 1:1 des modèles Replicate
+// Mapping explicite 1:1 des modèles Replicate.
+// Ajout de Seedream Pro 5 (ByteDance) et Qwen Image 3 Pro (Alibaba).
 const MODELS = {
   'flux-schnell': 'black-forest-labs/flux-schnell',
   'flux-dev': 'black-forest-labs/flux-dev',
   'flux-1.1-pro-ultra': 'black-forest-labs/flux-1.1-pro-ultra',
   'flux-dev-realism': 'xlabs-ai/flux-dev-realism:39b3434f194f87a900d1bc2b6d4b983e90f0dde1d5022c27b52c143d670758fa',
-  'nano-banana-pro': 'google/nano-banana-pro'
+  'nano-banana-pro': 'google/nano-banana-pro',
+  'seedream-pro-5': 'bytedance/seedream-pro-5',
+  'qwen-image-3-pro': 'qwen/qwen-image-3-pro'
 };
 
-const ACCESS_TOKEN_TTL = 60 * 60; // 1 heure
+// ============================================================================
+// TARIFICATION (coût estimé par image, en USD) — affiché à chaque génération.
+// Valeurs indicatives à ajuster selon la grille Replicate réelle.
+// ============================================================================
+const PRICING = {
+  'flux-schnell': 0.003,
+  'flux-dev': 0.025,
+  'flux-1.1-pro-ultra': 0.06,   // facturé x2 en résolution 4k
+  'flux-dev-realism': 0.03,
+  'nano-banana-pro': 0.039,
+  'seedream-pro-5': 0.06,
+  'qwen-image-3-pro': 0.05
+};
+
+function getGenerationCost(model, resolution = '2k') {
+  const base = PRICING[model];
+  if (base === undefined) return null;
+  if (model === 'flux-1.1-pro-ultra' && String(resolution).toLowerCase() === '4k') {
+    return +(base * 2).toFixed(3);
+  }
+  return base;
+}
+
+// ============================================================================
+// SÉCURITÉ — LISTE BLANCHE DES redirect_uri
+// ============================================================================
+// Toute redirect_uri non autorisée est refusée (authorize + register + token),
+// ce qui bloque l'open redirect et le détournement de codes d'autorisation.
+// - Par défaut : callbacks des plateformes MCP connues + localhost (RFC 8252).
+// - Extension via la variable d'environnement ALLOWED_REDIRECT_URIS
+//   (préfixes séparés par des virgules), ex :
+//   ALLOWED_REDIRECT_URIS="https://mon-app.exemple/callback,https://autre.org/cb"
+const VALID_REDIRECT_PREFIXES = [
+  'https://chatgpt.com/',            // connecteurs MCP ChatGPT
+  'https://claude.ai/',               // connecteurs MCP Claude
+  'https://goose.ai/',                // GooseAI
+  'https://vscode.dev/',              // VS Code (MCP OAuth)
+  'https://insiders.vscode.dev/',
+  'http://localhost:',                // développement local (RFC 8252)
+  'http://127.0.0.1:'
+].concat(
+  (process.env.ALLOWED_REDIRECT_URIS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
+
+function validateRedirectUri(redirectUri) {
+  if (typeof redirectUri !== 'string' || redirectUri.length === 0) {
+    return { ok: false, reason: 'redirect_uri manquante' };
+  }
+  try {
+    new URL(redirectUri);
+  } catch {
+    return { ok: false, reason: 'redirect_uri malformée' };
+  }
+  const whitelisted = VALID_REDIRECT_PREFIXES.some((prefix) =>
+    redirectUri.startsWith(prefix)
+  );
+  if (!whitelisted) {
+    return { ok: false, reason: 'redirect_uri non autorisée (liste blanche)' };
+  }
+  return { ok: true };
+}
+
+// ============================================================================
+// SÉCURITÉ — RATE LIMITING (anti brute-force sur les endpoints OAuth)
+// ============================================================================
+// Limite en mémoire, par IP. NB : sur Vercel/serverless le compteur est par
+// instance (best-effort) ; pour une limite globale, utiliser un store externe.
+const RATE_LIMIT = { windowMs: 60 * 1000, max: 15 };
+const rateBuckets = new Map();
+
+function isRateLimited(scope, req) {
+  const ip =
+    (req.headers['x-forwarded-for'] || '').split(',')[0].trim() ||
+    'unknown';
+  const key = `${scope}:${ip}`;
+  const now = Date.now();
+
+  const bucket = rateBuckets.get(key);
+  if (!bucket || now - bucket.start > RATE_LIMIT.windowMs) {
+    if (rateBuckets.size > 10000) rateBuckets.clear(); // bornage mémoire
+    rateBuckets.set(key, { start: now, count: 1 });
+    return false;
+  }
+  bucket.count += 1;
+  return bucket.count > RATE_LIMIT.max;
+}
+
+const ACCESS_TOKEN_TTL = 60 * 60;          // 1 heure
 const REFRESH_TOKEN_TTL = 60 * 60 * 24 * 90; // 90 jours
 
 function escapeHtml(str) {
@@ -56,19 +165,21 @@ function renderAuthorizeForm(params, error) {
  *    (Claude Code/Desktop, ou config avancée avec header standard).
  * 3. Le MCP_AUTH_TOKEN brut dans un header personnalisé nommé
  *    "MCP_BEARER_TOKEN" (certaines configs ChatGPT envoient le nom
- *    de la variable comme nom de header, plutôt que le header
- *    Authorization standard).
+ *    de la variable comme nom de header).
+ *
+ * Toutes les comparaisons de secrets se font en TEMPS CONSTANT
+ * (constantTimeCompare) — jamais avec "===".
  */
 function isAuthorized(req) {
   const authHeader = req.headers['authorization'];
   if (authHeader) {
     const token = authHeader.replace(/^Bearer\s+/i, '');
     if (verifyToken(token, 'access')) return true;
-    if (process.env.MCP_AUTH_TOKEN && token === process.env.MCP_AUTH_TOKEN) return true;
+    if (MCP_AUTH_TOKEN && constantTimeCompare(token, MCP_AUTH_TOKEN)) return true;
   }
 
   const customHeader = req.headers['mcp_bearer_token'] || req.headers['mcp-bearer-token'];
-  if (customHeader && process.env.MCP_AUTH_TOKEN && customHeader === process.env.MCP_AUTH_TOKEN) {
+  if (customHeader && MCP_AUTH_TOKEN && constantTimeCompare(customHeader, MCP_AUTH_TOKEN)) {
     return true;
   }
 
@@ -105,10 +216,22 @@ async function handleOauthRegister(req, res) {
   const body = typeof req.body === 'object' && req.body ? req.body : {};
   const clientId = randomBytes(16).toString('hex');
 
+  // SÉCURITÉ — liste blanche : on n'enregistre que des redirect_uris autorisées.
+  const requestedRedirects = Array.isArray(body.redirect_uris) ? body.redirect_uris : [];
+  if (requestedRedirects.length > 0) {
+    const invalid = requestedRedirects.find((uri) => !validateRedirectUri(uri).ok);
+    if (invalid) {
+      return res.status(400).json({
+        error: 'invalid_redirect_uri',
+        error_description: `redirect_uri refusée par la liste blanche : ${invalid}`
+      });
+    }
+  }
+
   return res.status(201).json({
     client_id: clientId,
     client_name: body.client_name || 'MCP Client',
-    redirect_uris: body.redirect_uris || [],
+    redirect_uris: requestedRedirects,
     token_endpoint_auth_method: 'none',
     grant_types: ['authorization_code', 'refresh_token'],
     response_types: ['code'],
@@ -129,19 +252,46 @@ async function handleOauthAuthorize(req, res) {
   };
 
   if (req.method === 'GET') {
-    if (!params.redirect_uri) {
-      return res.status(400).send('Paramètre redirect_uri manquant.');
+    // SÉCURITÉ — liste blanche : redirect_uri doit être autorisée.
+    const redirectCheck = validateRedirectUri(params.redirect_uri);
+    if (!redirectCheck.ok) {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.status(400).send(`Requête refusée : ${redirectCheck.reason}.`);
+    }
+    // SÉCURITÉ — PKCE obligatoire : code_challenge (S256) requis dès le départ.
+    if (!params.code_challenge || params.code_challenge_method !== 'S256') {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.status(400).send('Requête refusée : PKCE obligatoire (code_challenge + méthode S256).');
     }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     return res.status(200).send(renderAuthorizeForm(params));
   }
 
   if (req.method === 'POST') {
+    // SÉCURITÉ — rate limiting anti brute-force du mot de passe.
+    if (isRateLimited('authorize', req)) {
+      return res.status(429).json({ error: 'too_many_requests' });
+    }
+
     const body = typeof req.body === 'object' && req.body ? req.body : {};
     const submittedParams = { ...params, ...body };
     const password = body.password || '';
 
-    if (!process.env.MCP_AUTH_TOKEN || password !== process.env.MCP_AUTH_TOKEN) {
+    // SÉCURITÉ — liste blanche sur la redirect_uri soumise.
+    const redirectCheck = validateRedirectUri(submittedParams.redirect_uri);
+    if (!redirectCheck.ok) {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.status(400).send(renderAuthorizeForm(submittedParams, `Requête refusée : ${redirectCheck.reason}.`));
+    }
+
+    // SÉCURITÉ — PKCE obligatoire : le code ne peut pas être émis sans challenge S256.
+    if (!submittedParams.code_challenge || submittedParams.code_challenge_method !== 'S256') {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      return res.status(400).send(renderAuthorizeForm(submittedParams, 'PKCE obligatoire : code_challenge (S256) requis.'));
+    }
+
+    // SÉCURITÉ — comparaison du mot de passe en temps constant (jamais "===").
+    if (!MCP_AUTH_TOKEN || !constantTimeCompare(password, MCP_AUTH_TOKEN)) {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       return res.status(401).send(renderAuthorizeForm(submittedParams, 'Mot de passe incorrect.'));
     }
@@ -169,6 +319,11 @@ async function handleOauthToken(req, res) {
     return res.status(405).json({ error: 'method_not_allowed' });
   }
 
+  // SÉCURITÉ — rate limiting anti brute-force / rejeu sur l'endpoint token.
+  if (isRateLimited('token', req)) {
+    return res.status(429).json({ error: 'too_many_requests' });
+  }
+
   const body = typeof req.body === 'object' && req.body ? req.body : {};
   const grantType = body.grant_type;
 
@@ -184,12 +339,19 @@ async function handleOauthToken(req, res) {
       return res.status(400).json({ error: 'invalid_grant', error_description: 'Code invalide ou expiré' });
     }
 
-    if (payload.redirectUri && redirect_uri && payload.redirectUri !== redirect_uri) {
-      return res.status(400).json({ error: 'invalid_grant', error_description: 'redirect_uri ne correspond pas' });
+    // SÉCURITÉ — PKCE OBLIGATOIRE : un code émis sans challenge est refusé,
+    // et le verifier doit correspondre au challenge signé (comparaison
+    // en temps constant via verifyPkce).
+    if (!payload.codeChallenge) {
+      return res.status(400).json({ error: 'invalid_grant', error_description: 'PKCE obligatoire : code émis sans code_challenge' });
+    }
+    if (!verifyPkce(code_verifier, payload.codeChallenge)) {
+      return res.status(400).json({ error: 'invalid_grant', error_description: 'code_verifier invalide (PKCE S256)' });
     }
 
-    if (payload.codeChallenge && !verifyPkce(code_verifier, payload.codeChallenge)) {
-      return res.status(400).json({ error: 'invalid_grant', error_description: 'code_verifier invalide (PKCE)' });
+    // redirect_uri : correspondance stricte en temps constant si fournie.
+    if (redirect_uri && payload.redirectUri && !constantTimeCompare(redirect_uri, payload.redirectUri)) {
+      return res.status(400).json({ error: 'invalid_grant', error_description: 'redirect_uri ne correspond pas' });
     }
 
     const clientId = client_id || payload.clientId;
@@ -248,7 +410,12 @@ async function handleMcp(req, res) {
     const body = req.body || {};
     const method = body.method;
 
-    console.log('[MCP DEBUG] incoming method:', method, 'body:', JSON.stringify(body));
+    // SÉCURITÉ — logs nettoyés : on ne loggue NI le corps complet de la
+    // requête, NI les prompts, NI aucun token. Seul le nom de la méthode,
+    // et uniquement en mode debug explicite (MCP_DEBUG=1).
+    if (process.env.MCP_DEBUG === '1') {
+      console.info('[MCP] method:', method);
+    }
 
     if (body.id === undefined) return res.status(202).end();
 
@@ -259,10 +426,9 @@ async function handleMcp(req, res) {
         result: {
           protocolVersion: '2025-06-18',
           capabilities: { tools: {} },
-          serverInfo: { name: 'mcp-image-server', version: '1.8.1' }
+          serverInfo: { name: 'mcp-image-server', version: '2.0.0' }
         }
       };
-      console.log('[MCP DEBUG] initialize response:', JSON.stringify(response));
       return res.status(200).json(response);
     }
 
@@ -274,7 +440,7 @@ async function handleMcp(req, res) {
           tools: [
             {
               name: 'generate_image',
-              description: 'Générer ou modifier une image via Replicate. Supporte plusieurs références (avatar + vêtements) via Nano Banana Pro, le mode ultra via FLUX 1.1 Pro Ultra, et un rendu photoréaliste via FLUX Dev Realism.',
+              description: 'Générer ou modifier une image via Replicate. Supporte plusieurs références (avatar + vêtements) via Nano Banana Pro ou Seedream Pro 5, le mode ultra via FLUX 1.1 Pro Ultra, un rendu photoréaliste via FLUX Dev Realism, et la génération Qwen Image 3 Pro (Alibaba). Le coût estimé de la génération est affiché dans la réponse.',
               inputSchema: {
                 type: 'object',
                 properties: {
@@ -284,8 +450,8 @@ async function handleMcp(req, res) {
                   },
                   model: {
                     type: 'string',
-                    enum: ['flux-schnell', 'flux-dev', 'flux-1.1-pro-ultra', 'flux-dev-realism', 'nano-banana-pro'],
-                    description: 'Modèle à utiliser. Utilisez nano-banana-pro pour plusieurs images de référence, flux-dev-realism pour un rendu photoréaliste (texte-vers-image uniquement).'
+                    enum: ['flux-schnell', 'flux-dev', 'flux-1.1-pro-ultra', 'flux-dev-realism', 'nano-banana-pro', 'seedream-pro-5', 'qwen-image-3-pro'],
+                    description: 'Modèle à utiliser. nano-banana-pro ou seedream-pro-5 pour plusieurs images de référence, flux-dev-realism pour un rendu photoréaliste (texte-vers-image uniquement), qwen-image-3-pro pour une image de référence.'
                   },
                   images: {
                     type: 'array',
@@ -319,7 +485,6 @@ async function handleMcp(req, res) {
           ]
         }
       };
-      console.log('[MCP DEBUG] tools/list response:', JSON.stringify(response));
       return res.status(200).json(response);
     }
 
@@ -342,11 +507,14 @@ async function handleMcp(req, res) {
         throw new Error(`Le modèle spécifié "${requestedModel}" n\u2019est pas pris en charge par le serveur.`);
       }
 
+      // Coût estimé de la génération — affiché à chaque requête.
+      const estimatedCost = getGenerationCost(requestedModel, resolution);
+
       let output;
 
-      if (requestedModel === 'nano-banana-pro') {
+      if (requestedModel === 'nano-banana-pro' || requestedModel === 'seedream-pro-5') {
         output = await replicate.run(
-          MODELS['nano-banana-pro'],
+          MODELS[requestedModel],
           {
             input: {
               prompt,
@@ -357,11 +525,21 @@ async function handleMcp(req, res) {
             }
           }
         );
+      } else if (requestedModel === 'qwen-image-3-pro') {
+        const inputParams = {
+          prompt,
+          aspect_ratio: aspectRatio,
+          output_format: outputFormat
+        };
+        if (rawImages.length >= 1) {
+          inputParams.image = rawImages[0];
+        }
+        output = await replicate.run(MODELS['qwen-image-3-pro'], { input: inputParams });
       } else if (requestedModel === 'flux-1.1-pro-ultra') {
         if (rawImages.length > 1) {
           throw new Error(
             'FLUX Ultra accepte une seule référence. ' +
-            'Choisissez nano-banana-pro pour utiliser plusieurs images de référence.'
+            'Choisissez nano-banana-pro ou seedream-pro-5 pour utiliser plusieurs images de référence.'
           );
         }
 
@@ -428,6 +606,18 @@ async function handleMcp(req, res) {
         throw new Error('Replicate n\u2019a renvoyé aucune URL d\u2019image.');
       }
 
+      // Logs nettoyés : méta-données utiles uniquement, aucune donnée sensible.
+      console.info('[MCP] generate_image ok', {
+        model: requestedModel,
+        references: rawImages.length,
+        resolution,
+        estimatedCostUsd: estimatedCost
+      });
+
+      const costLine = estimatedCost !== null
+        ? `\n\n💰 Coût estimé de la génération : $${estimatedCost} (${requestedModel}${requestedModel === 'flux-1.1-pro-ultra' && String(resolution).toLowerCase() === '4k' ? ', 4k' : ''})`
+        : '';
+
       return res.status(200).json({
         jsonrpc: '2.0',
         id: body.id,
@@ -435,7 +625,7 @@ async function handleMcp(req, res) {
           content: [
             {
               type: 'text',
-              text: `![Image générée](${imageUrl})\n\n[Ouvrir l'image originale en grande résolution](${imageUrl})`
+              text: `![Image générée](${imageUrl})\n\n[Ouvrir l'image originale en grande résolution](${imageUrl})${costLine}`
             }
           ]
         }
@@ -457,11 +647,13 @@ async function handleMcp(req, res) {
     });
 
   } catch (error) {
-    console.error('[MCP ERROR]', error);
+    // SÉCURITÉ — logs nettoyés : on ne loggue que le message d'erreur,
+    // jamais la stack ni les données de la requête.
+    console.error('[MCP ERROR]', error?.message || 'unknown error');
     return res.status(500).json({
       jsonrpc: '2.0',
       id: req.body?.id ?? null,
-      error: { code: -32603, message: error.message }
+      error: { code: -32603, message: error?.message || 'internal error' }
     });
   }
 }
@@ -469,7 +661,7 @@ async function handleMcp(req, res) {
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, MCP_BEARER_TOKEN');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
