@@ -496,6 +496,13 @@ async function handleMcp(req, res) {
         ...(args.image ? [args.image] : [])
       ];
 
+        if (typeof prompt !== 'string' || prompt.length > 2000) {
+          throw new Error('Prompt invalide ou trop long (max 2000 caractères).');
+        }
+        if (rawImages.length > 4) {
+          throw new Error('Maximum 4 images de référence.');
+        }
+
       const requestedModel = args.model || (rawImages.length > 1 ? 'nano-banana-pro' : 'flux-schnell');
       const aspectRatio = args.aspect_ratio || '16:9';
       const outputFormat = args.output_format || 'png';
