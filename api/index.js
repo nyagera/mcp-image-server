@@ -489,6 +489,7 @@ async function handleMcp(req, res) {
     }
 
     if (method === 'tools/call' && body.params?.name === 'generate_image') {
+      try {
       const args = body.params?.arguments || {};
       const prompt = args.prompt || 'une image';
 
@@ -662,6 +663,16 @@ async function handleMcp(req, res) {
           ]
         }
       });
+      } catch (error) {
+        return res.status(200).json({
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            isError: true,
+            content: [{ type: 'text', text: `Erreur : ${error.message}` }]
+          }
+        });
+      }
     }
 
     // Méthode non reconnue : on renvoie une vraie erreur JSON-RPC
