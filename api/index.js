@@ -521,6 +521,9 @@ async function handleMcp(req, res) {
       let output;
 
       if (requestedModel === 'nano-banana-pro') {
+        if (outputFormat === 'webp') {
+          throw new Error('nano-banana-pro supporte uniquement les formats png et jpg.');
+        }
         output = await replicate.run(
           MODELS[requestedModel],
           {
