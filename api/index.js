@@ -426,7 +426,7 @@ async function handleMcp(req, res) {
         result: {
           protocolVersion: '2025-06-18',
           capabilities: { tools: {} },
-          serverInfo: { name: 'mcp-image-server', version: '2.0.0' }
+          serverInfo: { name: 'mcp-image-server', version: `2.0.0+${(process.env.VERCEL_GIT_COMMIT_SHA || 'local').slice(0, 7)}` }
         }
       };
       return res.status(200).json(response);
