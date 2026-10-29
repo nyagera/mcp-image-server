@@ -30,8 +30,8 @@ const MODELS = {
   'flux-1.1-pro-ultra': 'black-forest-labs/flux-1.1-pro-ultra',
   'flux-dev-realism': 'xlabs-ai/flux-dev-realism:39b3434f194f87a900d1bc2b6d4b983e90f0dde1d5022c27b52c143d670758fa',
   'nano-banana-pro': 'google/nano-banana-pro',
-  'seedream-pro-5': 'bytedance/seedream-pro-5',
-  'qwen-image-3-pro': 'qwen/qwen-image-3-pro'
+  'seedream-pro-5': 'bytedance/seedream-5-pro',
+  'qwen-image-3-pro': 'alibaba/qwen-image-3-pro'
 };
 
 // ============================================================================
@@ -41,18 +41,20 @@ const MODELS = {
 const PRICING = {
   'flux-schnell': 0.003,
   'flux-dev': 0.025,
-  'flux-1.1-pro-ultra': 0.06,   // facturé x2 en résolution 4k
-  'flux-dev-realism': 0.03,
-  'nano-banana-pro': 0.039,
-  'seedream-pro-5': 0.06,
-  'qwen-image-3-pro': 0.05
+  'flux-1.1-pro-ultra': 0.06,
+  'flux-dev-realism': 0.037,   // estimation : facturé au temps GPU
+  'nano-banana-pro': { '1k': 0.15, '2k': 0.15, '4k': 0.30 },
+  'seedream-pro-5': { '1k': 0.045, '2k': 0.09 },
+  'qwen-image-3-pro': 0.04
 };
 
 function getGenerationCost(model, resolution = '2k') {
   const base = PRICING[model];
   if (base === undefined) return null;
-  if (model === 'flux-1.1-pro-ultra' && String(resolution).toLowerCase() === '4k') {
-    return +(base * 2).toFixed(3);
+  if (base === null) return null;
+  if (typeof base === 'object') {
+    const p = base[String(resolution).toLowerCase()];
+    return p === undefined ? null : p;
   }
   return base;
 }
@@ -66,37 +68,33 @@ function getGenerationCost(model, resolution = '2k') {
 // - Extension via la variable d'environnement ALLOWED_REDIRECT_URIS
 //   (préfixes séparés par des virgules), ex :
 //   ALLOWED_REDIRECT_URIS="https://mon-app.exemple/callback,https://autre.org/cb"
-const VALID_REDIRECT_PREFIXES = [
-  'https://chatgpt.com/',            // connecteurs MCP ChatGPT
-  'https://claude.ai/',               // connecteurs MCP Claude
-  'https://goose.ai/',                // GooseAI
-  'https://vscode.dev/',              // VS Code (MCP OAuth)
-  'https://insiders.vscode.dev/',
-  'http://localhost:',                // développement local (RFC 8252)
-  'http://127.0.0.1:'
-].concat(
-  (process.env.ALLOWED_REDIRECT_URIS || '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-);
+const ALLOWED_HTTPS_HOSTS = ['claude.ai', 'claude.com', 'chatgpt.com', 'vscode.dev', 'insiders.vscode.dev'];
+const EXTRA_REDIRECTS = (process.env.ALLOWED_REDIRECT_URIS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean); // URI exactes
 
 function validateRedirectUri(redirectUri) {
   if (typeof redirectUri !== 'string' || redirectUri.length === 0) {
     return { ok: false, reason: 'redirect_uri manquante' };
   }
+  let u;
   try {
-    new URL(redirectUri);
+    u = new URL(redirectUri);
   } catch {
     return { ok: false, reason: 'redirect_uri malformée' };
   }
-  const whitelisted = VALID_REDIRECT_PREFIXES.some((prefix) =>
-    redirectUri.startsWith(prefix)
-  );
-  if (!whitelisted) {
-    return { ok: false, reason: 'redirect_uri non autorisée (liste blanche)' };
+  if (u.username || u.password) {
+    return { ok: false, reason: 'identifiants interdits dans la redirect_uri' };
   }
-  return { ok: true };
+  if (EXTRA_REDIRECTS.includes(redirectUri)) return { ok: true };
+
+  const isLocal = u.protocol === 'http:' && (u.hostname === 'localhost' || u.hostname === '127.0.0.1');
+  const isKnown = u.protocol === 'https:' && ALLOWED_HTTPS_HOSTS.includes(u.hostname);
+  if (isLocal || isKnown) return { ok: true };
+
+  console.info('[OAUTH] redirect refusée, hôte :', u.hostname);
+  return { ok: false, reason: 'redirect_uri non autorisée (liste blanche)' };
 }
 
 // ============================================================================
@@ -135,7 +133,7 @@ function escapeHtml(str) {
 
 function renderAuthorizeForm(params, error) {
   const hidden = Object.entries(params)
-    .map(([key, value]) => `<input type="hidden" name="${key}" value="${escapeHtml(value || '')}" />`)
+    .map(([key, value]) => `<input type="hidden" name="${escapeHtml(String(key))}" value="${escapeHtml(String(value ?? ''))}" />`)
     .join('\n');
 
   return `
@@ -274,7 +272,9 @@ async function handleOauthAuthorize(req, res) {
     }
 
     const body = typeof req.body === 'object' && req.body ? req.body : {};
-    const submittedParams = { ...params, ...body };
+    const submittedParams = Object.fromEntries(
+      Object.keys(params).map((k) => [k, body[k] ?? params[k]])
+    );
     const password = body.password || '';
 
     // SÉCURITÉ — liste blanche sur la redirect_uri soumise.
@@ -426,7 +426,7 @@ async function handleMcp(req, res) {
         result: {
           protocolVersion: '2025-06-18',
           capabilities: { tools: {} },
-          serverInfo: { name: 'mcp-image-server', version: '2.0.0' }
+          serverInfo: { name: 'mcp-image-server', version: `2.0.0+${(process.env.VERCEL_GIT_COMMIT_SHA || 'local').slice(0, 7)}` }
         }
       };
       return res.status(200).json(response);
@@ -451,7 +451,7 @@ async function handleMcp(req, res) {
                   model: {
                     type: 'string',
                     enum: ['flux-schnell', 'flux-dev', 'flux-1.1-pro-ultra', 'flux-dev-realism', 'nano-banana-pro', 'seedream-pro-5', 'qwen-image-3-pro'],
-                    description: 'Modèle à utiliser. nano-banana-pro ou seedream-pro-5 pour plusieurs images de référence, flux-dev-realism pour un rendu photoréaliste (texte-vers-image uniquement), qwen-image-3-pro pour une image de référence.'
+                    description: 'Modèle à utiliser. nano-banana-pro ou seedream-pro-5 pour plusieurs images de référence, flux-dev-realism pour un rendu photoréaliste (texte-vers-image uniquement), qwen-image-3-pro pour une image de référence. Limites par modèle : nano-banana-pro — résolutions 1k, 2k et 4k ; formats png et jpg ; ratios 4:3 et 3:4 acceptés. seedream-pro-5 — résolutions 1k et 2k uniquement ; formats png et jpg ; pas de ratio 4:5. qwen-image-3-pro — une seule image de référence ; pas de ratio 21:9 ni 4:5 ; pas de résolution ni de format de sortie. La résolution 4k est réservée à nano-banana-pro.'
                   },
                   images: {
                     type: 'array',
@@ -465,7 +465,7 @@ async function handleMcp(req, res) {
                   },
                   aspect_ratio: {
                     type: 'string',
-                    enum: ['1:1', '16:9', '21:9', '3:2', '2:3', '4:5', '9:16'],
+                    enum: ['1:1', '16:9', '21:9', '4:3', '3:4', '3:2', '2:3', '4:5', '9:16'],
                     description: 'Ratio d\u2019aspect (ex: 16:9)'
                   },
                   resolution: {
@@ -489,6 +489,7 @@ async function handleMcp(req, res) {
     }
 
     if (method === 'tools/call' && body.params?.name === 'generate_image') {
+      try {
       const args = body.params?.arguments || {};
       const prompt = args.prompt || 'une image';
 
@@ -497,6 +498,13 @@ async function handleMcp(req, res) {
         ...(Array.isArray(args.image_data_list) ? args.image_data_list : []),
         ...(args.image ? [args.image] : [])
       ];
+
+        if (typeof prompt !== 'string' || prompt.length > 4000) {
+          throw new Error('Prompt invalide ou trop long (max 4000 caractères).');
+        }
+        if (rawImages.length > 4) {
+          throw new Error('Maximum 4 images de référence.');
+        }
 
       const requestedModel = args.model || (rawImages.length > 1 ? 'nano-banana-pro' : 'flux-schnell');
       const aspectRatio = args.aspect_ratio || '16:9';
@@ -512,7 +520,10 @@ async function handleMcp(req, res) {
 
       let output;
 
-      if (requestedModel === 'nano-banana-pro' || requestedModel === 'seedream-pro-5') {
+      if (requestedModel === 'nano-banana-pro') {
+        if (outputFormat === 'webp') {
+          throw new Error('nano-banana-pro supporte uniquement les formats png et jpg.');
+        }
         output = await replicate.run(
           MODELS[requestedModel],
           {
@@ -525,13 +536,38 @@ async function handleMcp(req, res) {
             }
           }
         );
+      } else if (requestedModel === 'seedream-pro-5') {
+        const SEEDREAM_RATIOS = ['1:1', '4:3', '3:4', '16:9', '9:16', '3:2', '2:3', '21:9'];
+        const SEEDREAM_SIZES = { '1k': '1K', '2k': '2K' };
+        const size = SEEDREAM_SIZES[String(resolution).toLowerCase()];
+        if (!size) {
+          throw new Error('seedream-pro-5 supporte uniquement les résolutions 1k et 2k.');
+        }
+        if (!SEEDREAM_RATIOS.includes(aspectRatio)) {
+          throw new Error(`seedream-pro-5 ne supporte pas le ratio ${aspectRatio}. Ratios possibles : ${SEEDREAM_RATIOS.join(', ')}.`);
+        }
+        if (outputFormat === 'webp') {
+          throw new Error('seedream-pro-5 supporte uniquement les formats png et jpg.');
+        }
+        output = await replicate.run(MODELS['seedream-pro-5'], {
+          input: {
+            prompt,
+            image_input: rawImages,
+            size,
+            aspect_ratio: aspectRatio,
+            output_format: outputFormat === 'jpg' ? 'jpeg' : 'png'
+          }
+        });
       } else if (requestedModel === 'qwen-image-3-pro') {
-        const inputParams = {
-          prompt,
-          aspect_ratio: aspectRatio,
-          output_format: outputFormat
-        };
-        if (rawImages.length >= 1) {
+        const QWEN_RATIOS = ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '2:1', '1:2'];
+        if (!QWEN_RATIOS.includes(aspectRatio)) {
+          throw new Error(`qwen-image-3-pro ne supporte pas le ratio ${aspectRatio}. Ratios possibles : ${QWEN_RATIOS.join(', ')}.`);
+        }
+        if (rawImages.length > 1) {
+          throw new Error('qwen-image-3-pro accepte une seule image de référence.');
+        }
+        const inputParams = { prompt, aspect_ratio: aspectRatio };
+        if (rawImages.length === 1) {
           inputParams.image = rawImages[0];
         }
         output = await replicate.run(MODELS['qwen-image-3-pro'], { input: inputParams });
@@ -615,7 +651,7 @@ async function handleMcp(req, res) {
       });
 
       const costLine = estimatedCost !== null
-        ? `\n\n💰 Coût estimé de la génération : $${estimatedCost} (${requestedModel}${requestedModel === 'flux-1.1-pro-ultra' && String(resolution).toLowerCase() === '4k' ? ', 4k' : ''})`
+        ? `\n\n💰 Coût estimé de la génération : $${estimatedCost} (${requestedModel}${typeof PRICING[requestedModel] === 'object' && PRICING[requestedModel] !== null ? ', ' + String(resolution).toLowerCase() : ''})`
         : '';
 
       return res.status(200).json({
@@ -630,6 +666,16 @@ async function handleMcp(req, res) {
           ]
         }
       });
+      } catch (error) {
+        return res.status(200).json({
+          jsonrpc: '2.0',
+          id: body.id,
+          result: {
+            isError: true,
+            content: [{ type: 'text', text: `Erreur : ${error.message}` }]
+          }
+        });
+      }
     }
 
     // Méthode non reconnue : on renvoie une vraie erreur JSON-RPC
