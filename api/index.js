@@ -451,7 +451,7 @@ async function handleMcp(req, res) {
                   model: {
                     type: 'string',
                     enum: ['flux-schnell', 'flux-dev', 'flux-1.1-pro-ultra', 'flux-dev-realism', 'nano-banana-pro', 'seedream-pro-5', 'qwen-image-3-pro'],
-                    description: 'Modèle à utiliser. nano-banana-pro ou seedream-pro-5 pour plusieurs images de référence, flux-dev-realism pour un rendu photoréaliste (texte-vers-image uniquement), qwen-image-3-pro pour une image de référence.'
+                    description: 'Modèle à utiliser. nano-banana-pro ou seedream-pro-5 pour plusieurs images de référence, flux-dev-realism pour un rendu photoréaliste (texte-vers-image uniquement), qwen-image-3-pro pour une image de référence. Limites par modèle : nano-banana-pro — résolutions 1k, 2k et 4k ; formats png et jpg ; ratios 4:3 et 3:4 acceptés. seedream-pro-5 — résolutions 1k et 2k uniquement ; formats png et jpg ; pas de ratio 4:5. qwen-image-3-pro — une seule image de référence ; pas de ratio 21:9 ni 4:5 ; pas de résolution ni de format de sortie. La résolution 4k est réservée à nano-banana-pro.'
                   },
                   images: {
                     type: 'array',
@@ -465,7 +465,7 @@ async function handleMcp(req, res) {
                   },
                   aspect_ratio: {
                     type: 'string',
-                    enum: ['1:1', '16:9', '21:9', '3:2', '2:3', '4:5', '9:16'],
+                    enum: ['1:1', '16:9', '21:9', '4:3', '3:4', '3:2', '2:3', '4:5', '9:16'],
                     description: 'Ratio d\u2019aspect (ex: 16:9)'
                   },
                   resolution: {
@@ -499,8 +499,8 @@ async function handleMcp(req, res) {
         ...(args.image ? [args.image] : [])
       ];
 
-        if (typeof prompt !== 'string' || prompt.length > 2000) {
-          throw new Error('Prompt invalide ou trop long (max 2000 caractères).');
+        if (typeof prompt !== 'string' || prompt.length > 4000) {
+          throw new Error('Prompt invalide ou trop long (max 4000 caractères).');
         }
         if (rawImages.length > 4) {
           throw new Error('Maximum 4 images de référence.');
